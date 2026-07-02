@@ -1,6 +1,6 @@
 {
   "name": "@octabits-io/flow",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Durable DAG workflow engine: Zod-typed steps over Postgres + pg-boss, with an optional AI add-on (token/cost/quota). Layered single package.",
   "license": "MIT",
   "type": "module",
