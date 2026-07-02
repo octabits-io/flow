@@ -1,0 +1,100 @@
+{
+  "name": "@octabits-io/flow",
+  "version": "0.1.4",
+  "description": "Durable DAG workflow engine: Zod-typed steps over Postgres + pg-boss, with an optional AI add-on (token/cost/quota). Layered single package.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./ai": {
+      "types": "./dist/ai/index.d.ts",
+      "import": "./dist/ai/index.js",
+      "default": "./dist/ai/index.js"
+    },
+    "./store-pg": {
+      "types": "./dist/store-pg/index.d.ts",
+      "import": "./dist/store-pg/index.js",
+      "default": "./dist/store-pg/index.js"
+    },
+    "./dispatcher-pgboss": {
+      "types": "./dist/dispatcher-pgboss/index.d.ts",
+      "import": "./dist/dispatcher-pgboss/index.js",
+      "default": "./dist/dispatcher-pgboss/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "clean": "rm -rf dist",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "lint": "node scripts/check-boundaries.mjs",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "tsup"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/octabits-io/platform.git",
+    "directory": "packages/flow"
+  },
+  "homepage": "https://github.com/octabits-io/platform/tree/main/packages/flow",
+  "bugs": {
+    "url": "https://github.com/octabits-io/platform/issues"
+  },
+  "keywords": [
+    "workflow",
+    "dag",
+    "durable-execution",
+    "orchestration",
+    "ai",
+    "llm",
+    "pg-boss",
+    "postgres",
+    "zod"
+  ],
+  "peerDependencies": {
+    "@ai-sdk/provider": "^4.0.0",
+    "ai": "^7.0.0",
+    "pg": "^8.0.0",
+    "pg-boss": "^12.0.0",
+    "typescript": "^5 || ^6",
+    "zod": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@ai-sdk/provider": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    },
+    "pg-boss": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@ai-sdk/provider": "^4.0.1",
+    "@testcontainers/postgresql": "^12.0.4",
+    "@types/node": "^26.0.1",
+    "@types/pg": "^8.20.0",
+    "ai": "^7.0.9",
+    "pg": "^8.22.0",
+    "pg-boss": "^12.24.1",
+    "testcontainers": "^12.0.4",
+    "vitest": "^4"
+  }
+}
