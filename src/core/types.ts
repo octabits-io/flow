@@ -30,7 +30,7 @@ export type StepStatus =
  * as soon as ALL of its dependencies have completed.
  */
 export interface WorkflowDefinition {
-  /** Workflow type identifier (e.g. 'listing-enrichment'). */
+  /** Workflow type identifier (e.g. 'document-enrichment'). */
   type: string;
   /** The steps. Order is irrelevant — execution order is derived from dependencies. */
   steps: StepDefinition[];
@@ -48,7 +48,7 @@ export interface StepDefinition {
 }
 
 export interface StartOptions {
-  /** Optional reference for efficient filtering/listing (e.g. 'listing:123'). */
+  /** Optional reference for efficient filtering/lookup (e.g. 'document:123'). */
   entityRef?: string;
   /**
    * Opaque metadata persisted on the workflow row. Add-ons use this as an escape
