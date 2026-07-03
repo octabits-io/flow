@@ -7,6 +7,7 @@
 // provider-agnostic, Zod-typed, multi-step LLM workflows.
 
 export * from './instrumented-model';
+export * from './instrumented-embedding-model';
 export * from './cost';
 export * from './context';
 export * from './define-ai-step';

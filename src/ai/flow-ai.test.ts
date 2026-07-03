@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import type { LanguageModelV4 } from '@ai-sdk/provider';
+import type { LanguageModelV4, EmbeddingModelV4 } from '@ai-sdk/provider';
 import {
   createWorkflowEngine,
   createInMemoryWorkflowStore,
@@ -10,6 +10,7 @@ import {
 } from '../core';
 import { createCostEstimator, estimateCostMicros } from './cost';
 import { createInstrumentedModel, createUsageAccumulator, type AccumulatedUsage } from './instrumented-model';
+import { createInstrumentedEmbeddingModel, createEmbeddingUsageAccumulator } from './instrumented-embedding-model';
 import { createAiWorkflowHooks, type AiUsageRecorder, type AiQuotaPolicy } from './hooks';
 import { defineAiStep, buildAiWorkflow } from './define-ai-step';
 import type { AiContext } from './context';
@@ -74,6 +75,61 @@ describe('instrumented model', () => {
     await (model as any).doGenerate({ prompt: [] });
     await (model as any).doGenerate({ prompt: [] });
     expect(acc.get()).toMatchObject({ inputTokens: 20, outputTokens: 10 });
+  });
+});
+
+// A minimal fake embedding model that reports fixed token usage from doEmbed.
+function fakeEmbeddingModel(modelId: string, tokens = 42): EmbeddingModelV4 {
+  return {
+    specificationVersion: 'v4',
+    provider: 'fake',
+    modelId,
+    maxEmbeddingsPerCall: 2048,
+    supportsParallelCalls: true,
+    async doEmbed({ values }: { values: string[] }) {
+      return {
+        embeddings: values.map(() => [0.1, 0.2, 0.3]),
+        usage: { tokens },
+      };
+    },
+  } as unknown as EmbeddingModelV4;
+}
+
+describe('instrumented embedding model', () => {
+  it('captures token usage transparently from doEmbed', async () => {
+    const acc = createEmbeddingUsageAccumulator();
+    const model = createInstrumentedEmbeddingModel(fakeEmbeddingModel('text-embedding-3-small', 100), acc);
+
+    await (model as any).doEmbed({ values: ['a', 'b'] });
+
+    expect(acc.hasUsage()).toBe(true);
+    expect(acc.get()).toEqual({ inputTokens: 100, callCount: 1, modelId: 'text-embedding-3-small' });
+  });
+
+  it('accumulates across multiple doEmbed calls', async () => {
+    const acc = createEmbeddingUsageAccumulator();
+    const model = createInstrumentedEmbeddingModel(fakeEmbeddingModel('text-embedding-3-small', 30), acc);
+    await (model as any).doEmbed({ values: ['a'] });
+    await (model as any).doEmbed({ values: ['b'] });
+    expect(acc.get()).toEqual({ inputTokens: 60, callCount: 2, modelId: 'text-embedding-3-small' });
+  });
+
+  it('reset() clears accumulated state for reuse across flushes', async () => {
+    const acc = createEmbeddingUsageAccumulator();
+    const model = createInstrumentedEmbeddingModel(fakeEmbeddingModel('text-embedding-3-small', 50), acc);
+    await (model as any).doEmbed({ values: ['a'] });
+    acc.reset();
+    expect(acc.hasUsage()).toBe(false);
+    expect(acc.get()).toEqual({ inputTokens: 0, callCount: 0, modelId: '' });
+  });
+
+  it('prices embedding tokens through estimateCostMicros (output/cache = 0)', () => {
+    // text-embedding-3-small: $0.02/M input → 1_000_000 * 0.02 / 1e6 = $0.02 → 20000 micros.
+    const micros = estimateCostMicros(
+      { inputTokens: 1_000_000, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+      'text-embedding-3-small',
+    );
+    expect(micros).toBe(20000);
   });
 });
 
