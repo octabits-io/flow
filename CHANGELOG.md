@@ -1,5 +1,11 @@
 # @octabits-io/flow
 
+## 0.3.0
+
+### Minor Changes
+
+- [`2446776`](https://github.com/octabits-io/platform/commit/2446776b6007b2be8eaa9890d84b9b0df4af1cf0) - **flow/ai:** add embedding-model usage instrumentation. New exports `createInstrumentedEmbeddingModel` and `createEmbeddingUsageAccumulator` (with `EmbeddingUsageAccumulator` / `EmbeddingAccumulatedUsage` types) mirror the existing language-model instrumentation for `EmbeddingModelV4`: they transparently capture input-token usage from every `embed`/`embedMany` call via the AI SDK's `wrapEmbeddingModel` middleware, additively across a batch, with a `reset()` for long-lived accumulators. The recorded `inputTokens` feed straight into the existing `estimateCostMicros` pricing table (output/cache fields = 0). Provider-agnostic. Unblocks consumers that track embedding costs (e.g. listing-vector / semantic-search pipelines).
+
 ## 0.2.0
 
 ### Minor Changes
