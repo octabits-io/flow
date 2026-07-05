@@ -13,8 +13,12 @@ export interface AiModelResolver<THost = unknown> {
   resolveModel(args: BuildStepContextArgs): Promise<LanguageModelV4> | LanguageModelV4;
   /** Optional host context (DI scope, services) exposed to handlers as `ctx.context.host`. */
   resolveHost?(args: BuildStepContextArgs): Promise<THost> | THost;
-  /** Which key paid for the run — stamped into workflow metadata for usage rollups. */
-  resolveKeySource?(): Promise<'platform' | 'tenant'> | 'platform' | 'tenant';
+  /**
+   * Which key paid for the run — stamped into workflow metadata for usage
+   * rollups. Any string; `'platform' | 'tenant'` is the usual convention.
+   * When absent, rollups default to `'platform'`.
+   */
+  resolveKeySource?(): Promise<string> | string;
 }
 
 export interface AiUsageRecorder {
@@ -26,7 +30,7 @@ export interface AiUsageRecorder {
    * Roll the completed workflow's totals into a daily aggregate. The host reads
    * the workflow's accumulated totals from its own store and UPSERTs the rollup.
    */
-  recordWorkflowDaily?(args: { workflowId: number; workflowType: string; keySource: 'platform' | 'tenant'; date: string }): Promise<void>;
+  recordWorkflowDaily?(args: { workflowId: number; workflowType: string; keySource: string; date: string }): Promise<void>;
 }
 
 export interface AiQuotaPolicy {
@@ -94,7 +98,7 @@ export function createAiWorkflowHooks<THost = unknown>(
 
     async onWorkflowCompleted({ workflowId, workflow }) {
       if (!deps.usageRecorder.recordWorkflowDaily) return;
-      const keySource = (workflow.metadata?.keySource as 'platform' | 'tenant') ?? 'platform';
+      const keySource = (workflow.metadata?.keySource as string | undefined) ?? 'platform';
       const date = now().toISOString().split('T')[0]!;
       await deps.usageRecorder.recordWorkflowDaily({ workflowId, workflowType: workflow.type, keySource, date });
     },

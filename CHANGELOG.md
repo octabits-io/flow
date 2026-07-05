@@ -1,5 +1,11 @@
 # @octabits-io/flow
 
+## 0.5.0
+
+### Minor Changes
+
+- `keySource` in the AI hooks (`AiModelResolver.resolveKeySource`, `AiUsageRecorder.recordWorkflowDaily`) is now `string` instead of the hardcoded `'platform' | 'tenant'` union — that pair stays the documented convention and `'platform'` remains the default, but consumers can stamp any attribution value (e.g. `'byok'`). Non-breaking for existing implementers.
+
 ## 0.3.0
 
 ### Minor Changes

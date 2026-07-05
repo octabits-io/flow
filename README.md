@@ -537,6 +537,7 @@ Condensed list of public exports per subpath.
 **`@octabits-io/flow/ai`**
 - `defineAiStep`, `buildAiWorkflow`, `createAiWorkflowHooks`
 - `createInstrumentedModel`, `createUsageAccumulator`
+- `createInstrumentedEmbeddingModel`, `createEmbeddingUsageAccumulator`
 - `createCostEstimator`, `estimateCostMicros`, `DEFAULT_MODEL_PRICING`, `AiContext`
 
 ---

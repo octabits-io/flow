@@ -219,6 +219,26 @@ describe('createAiWorkflowHooks', () => {
     });
     expect(r.dailyCalls[0]).toEqual({ workflowId: 7, workflowType: 'listing-gen', keySource: 'platform', date: '2026-02-03' });
   });
+
+  it('round-trips a custom keySource value (no fixed union)', async () => {
+    const r = recorder();
+    const hooks = createAiWorkflowHooks({
+      modelResolver: { resolveModel: () => fakeModel('claude-sonnet-4-6'), resolveKeySource: () => 'byok' },
+      usageRecorder: r.rec,
+      now: () => new Date('2026-02-03T10:00:00.000Z'),
+    });
+    const start = await hooks.onBeforeStart!({ definition: { type: 't', steps: [] }, input: {} });
+    expect(start.ok).toBe(true);
+    if (!start.ok) return;
+    expect(start.value.metadata).toEqual({ keySource: 'byok' });
+
+    await hooks.onWorkflowCompleted!({
+      workflowId: 8,
+      partitionKey: 'p',
+      workflow: { type: 'listing-gen', metadata: start.value.metadata } as any,
+    });
+    expect(r.dailyCalls[0]).toEqual({ workflowId: 8, workflowType: 'listing-gen', keySource: 'byok', date: '2026-02-03' });
+  });
 });
 
 describe('end-to-end: AI workflow through flow-core', () => {
