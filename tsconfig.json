@@ -2,7 +2,7 @@
   "compilerOptions": {
     // Environment setup & latest features
     "lib": ["ESNext"],
-    "types": ["bun"],
+    "types": ["node"],
     "ignoreDeprecations": "6.0",
     "target": "ESNext",
     "module": "Preserve",
@@ -26,9 +26,7 @@
     // Some stricter flags (disabled by default)
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "noPropertyAccessFromIndexSignature": false,
-
-    "types": ["node"]
+    "noPropertyAccessFromIndexSignature": false
   },
   "include": ["src/**/*"],
   "exclude": ["dist", "node_modules"]
