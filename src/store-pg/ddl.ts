@@ -9,7 +9,7 @@ export function flowStoreDdl(schema = 'public'): string {
   const wf = `${schema}.flow_workflow`;
   const step = `${schema}.flow_workflow_step`;
   return `
-CREATE TABLE IF NOT EXISTS ${wf} (
+${createSchemaDdl(schema)}CREATE TABLE IF NOT EXISTS ${wf} (
   id              bigserial PRIMARY KEY,
   partition_key   text        NOT NULL,
   type            text        NOT NULL,
@@ -63,3 +63,8 @@ CREATE INDEX IF NOT EXISTS flow_workflow_step_parent_idx   ON ${step} (parent_st
 
 /** Default-schema DDL string. */
 export const FLOW_STORE_DDL = flowStoreDdl();
+
+/** `CREATE SCHEMA IF NOT EXISTS` line for non-default schemas; empty for 'public'. */
+export function createSchemaDdl(schema: string): string {
+  return schema === 'public' ? '' : `CREATE SCHEMA IF NOT EXISTS ${schema};\n\n`;
+}

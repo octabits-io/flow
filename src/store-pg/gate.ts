@@ -1,5 +1,6 @@
 import type { Pool } from 'pg';
 import type { StepGate, StepGateRequest, StepGateDecision, ConcurrencyRule, RateRule } from '../core';
+import { createSchemaDdl } from './ddl';
 
 // ============================================================================
 // Postgres StepGate adapter (shared, multi-worker — gap 03)
@@ -21,11 +22,16 @@ const DEFAULT_RATE_TABLE = 'flow_rate_bucket';
 const DEFAULT_LEASE_TABLE = 'flow_step_lease';
 
 /** DDL for the gate's two tables. Apply once at deploy time (or via `applySchema`). */
-export function flowGateDdl(opts: { rateBucketTable?: string; leaseTable?: string } = {}): string {
-  const rate = opts.rateBucketTable ?? DEFAULT_RATE_TABLE;
-  const lease = opts.leaseTable ?? DEFAULT_LEASE_TABLE;
+export function flowGateDdl(
+  opts: { schema?: string; rateBucketTable?: string; leaseTable?: string } = {},
+): string {
+  const schema = opts.schema ?? 'public';
+  const rateName = opts.rateBucketTable ?? DEFAULT_RATE_TABLE;
+  const leaseName = opts.leaseTable ?? DEFAULT_LEASE_TABLE;
+  const rate = `${schema}.${rateName}`;
+  const lease = `${schema}.${leaseName}`;
   return `
-CREATE TABLE IF NOT EXISTS ${rate} (
+${createSchemaDdl(schema)}CREATE TABLE IF NOT EXISTS ${rate} (
   partition_key text             NOT NULL,
   step_type     text             NOT NULL,
   tokens        double precision NOT NULL,
@@ -41,7 +47,7 @@ CREATE TABLE IF NOT EXISTS ${lease} (
   expires_at    timestamptz NOT NULL,
   PRIMARY KEY (partition_key, step_type, step_id)
 );
-CREATE INDEX IF NOT EXISTS ${lease}_active_idx ON ${lease} (partition_key, step_type, expires_at);
+CREATE INDEX IF NOT EXISTS ${leaseName}_active_idx ON ${lease} (partition_key, step_type, expires_at);
 `;
 }
 
@@ -52,6 +58,8 @@ export interface PgStepGateConfig {
   pool: Pool;
   /** Partition this gate is bound to (matches the engine/store partition). */
   partitionKey: string;
+  /** Schema the gate tables live in. Default 'public'. */
+  schema?: string;
   /** Per-stepType concurrency caps (held leases). */
   concurrency?: Record<string, ConcurrencyRule>;
   /** Per-stepType token-bucket rate limits. */
@@ -70,8 +78,9 @@ export interface PgStepGateConfig {
  */
 export function createPgStepGate(config: PgStepGateConfig): StepGate {
   const { pool, partitionKey } = config;
-  const RATE = config.tables?.rateBucket ?? DEFAULT_RATE_TABLE;
-  const LEASE = config.tables?.lease ?? DEFAULT_LEASE_TABLE;
+  const schema = config.schema ?? 'public';
+  const RATE = `${schema}.${config.tables?.rateBucket ?? DEFAULT_RATE_TABLE}`;
+  const LEASE = `${schema}.${config.tables?.lease ?? DEFAULT_LEASE_TABLE}`;
   const leaseTtl = Math.max(1, config.leaseTtlSeconds ?? 600);
   const concurrencyRetry = Math.max(1, config.concurrencyRetrySeconds ?? 1);
 
@@ -124,12 +133,12 @@ export function createPgStepGate(config: PgStepGateConfig): StepGate {
   async function consumeToken(req: StepGateRequest, rule: RateRule): Promise<boolean> {
     const capacity = rule.burst ?? Math.max(1, Math.ceil(rule.perSecond));
     const res = await pool.query(
-      `INSERT INTO ${RATE} (partition_key, step_type, tokens, updated_at)
+      `INSERT INTO ${RATE} AS bucket (partition_key, step_type, tokens, updated_at)
        VALUES ($1, $2, $3, now())
        ON CONFLICT (partition_key, step_type) DO UPDATE
-       SET tokens = LEAST($4, ${RATE}.tokens + EXTRACT(EPOCH FROM (now() - ${RATE}.updated_at)) * $5) - 1,
+       SET tokens = LEAST($4, bucket.tokens + EXTRACT(EPOCH FROM (now() - bucket.updated_at)) * $5) - 1,
            updated_at = now()
-       WHERE LEAST($4, ${RATE}.tokens + EXTRACT(EPOCH FROM (now() - ${RATE}.updated_at)) * $5) >= 1
+       WHERE LEAST($4, bucket.tokens + EXTRACT(EPOCH FROM (now() - bucket.updated_at)) * $5) >= 1
        RETURNING tokens`,
       [partitionKey, req.stepType, capacity - 1, capacity, rule.perSecond],
     );

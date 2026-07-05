@@ -257,9 +257,19 @@ const boss = new PgBoss({ connectionString: process.env.DATABASE_URL });
 await boss.start();
 
 // One-time schema setup (idempotent CREATE TABLE IF NOT EXISTS …).
+// `applySchema` is a dev/test convenience — in production, paste the DDL into your
+// own migration system instead so schema changes stay reviewed and versioned.
 await applySchema(pool, FLOW_STORE_DDL);
 await applySchema(pool, FLOW_GATE_DDL);
 await applySchema(pool, FLOW_EVENT_DDL);
+
+// Recommended for shared databases: keep the flow tables in their own Postgres
+// schema, and grant access on it only to the worker's role. That isolates the
+// engine's state from app tables without any row-level-security choreography.
+//   await applySchema(pool, flowStoreDdl('flow'));           // emits CREATE SCHEMA IF NOT EXISTS
+//   await applySchema(pool, flowGateDdl({ schema: 'flow' }));
+//   await applySchema(pool, flowEventDdl('flow'));
+//   … then pass `schema: 'flow'` to createPgWorkflowStore / createPgStepGate / createPgEventSink.
 
 // Per-partition engine.
 const store = createPgWorkflowStore({ pool, partitionKey });

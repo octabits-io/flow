@@ -1,5 +1,6 @@
 import type { Pool } from 'pg';
 import type { FlowObserver, FlowEvent, FlowEventType, WorkflowId } from '../core';
+import { createSchemaDdl } from './ddl';
 
 /**
  * DDL for the append-only run-history table (gap 10). Apply once at deploy time (alongside
@@ -8,7 +9,7 @@ import type { FlowObserver, FlowEvent, FlowEventType, WorkflowId } from '../core
 export function flowEventDdl(schema = 'public'): string {
   const evt = `${schema}.flow_step_event`;
   return `
-CREATE TABLE IF NOT EXISTS ${evt} (
+${createSchemaDdl(schema)}CREATE TABLE IF NOT EXISTS ${evt} (
   id            bigserial PRIMARY KEY,
   partition_key text        NOT NULL,
   workflow_id   bigint      NOT NULL,
