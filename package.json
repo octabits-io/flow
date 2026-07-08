@@ -89,12 +89,12 @@
   "devDependencies": {
     "@ai-sdk/provider": "^4.0.2",
     "@testcontainers/postgresql": "^12.0.4",
-    "@types/node": "^26.1.0",
+    "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",
-    "ai": "^7.0.15",
+    "ai": "^7.0.18",
     "pg": "^8.22.0",
     "pg-boss": "^12.25.1",
     "testcontainers": "^12.0.4",
-    "vitest": "^4.1.9"
+    "vitest": "^4.1.10"
   }
 }
