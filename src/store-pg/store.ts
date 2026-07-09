@@ -25,6 +25,78 @@ export interface PgWorkflowStoreDeps {
   schema?: string;
 }
 
+// --- executor seam ---------------------------------------------------------
+
+/** Minimal query result shape the store consumes (a structural subset of `pg`'s `QueryResult`). */
+export interface SqlResult<R> {
+  rows: R[];
+  rowCount: number | null;
+}
+
+/**
+ * The store's only contact with the database. `createWorkflowStore` issues raw
+ * parameterized SQL through this seam and never opens its own connections, so the
+ * *host* decides how queries run: a plain pool ({@link poolExecutor}), or a
+ * connection that first sets transaction-local GUCs for Row Level Security.
+ *
+ * `transaction(fn)` MUST run every `fn` query on a single connection inside one
+ * DB transaction; the passed executor is that same-connection handle. The store
+ * never nests transactions.
+ */
+export interface SqlExecutor {
+  query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<SqlResult<R>>;
+  transaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T>;
+}
+
+export interface WorkflowStoreDeps {
+  /** How the store talks to Postgres (pool-backed, RLS-scoped, …). */
+  exec: SqlExecutor;
+  /** Partition this store instance is bound to (e.g. a tenant id). */
+  partitionKey: string;
+  /** Schema the flow tables live in. Default 'public'. */
+  schema?: string;
+}
+
+/**
+ * Build a {@link SqlExecutor} over a `pg` {@link Pool}: top-level queries run on
+ * the pool (autocommit); `transaction` checks out a client and wraps `fn` in
+ * `BEGIN`/`COMMIT` (rolling back and always releasing on error). This is the
+ * batteries-included executor used by {@link createPgWorkflowStore}.
+ */
+export function poolExecutor(pool: Pool): SqlExecutor {
+  const fromClient = (client: PoolClient): SqlExecutor => ({
+    async query(sql, params) {
+      const res = await client.query(sql, params as unknown[]);
+      return { rows: res.rows, rowCount: res.rowCount };
+    },
+    // Already inside a transaction — reuse the same connection; the store never nests.
+    transaction(fn) {
+      return fn(fromClient(client));
+    },
+  });
+
+  return {
+    async query(sql, params) {
+      const res = await pool.query(sql, params as unknown[]);
+      return { rows: res.rows, rowCount: res.rowCount };
+    },
+    async transaction(fn) {
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await fn(fromClient(client));
+        await client.query('COMMIT');
+        return result;
+      } catch (e) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw e;
+      } finally {
+        client.release();
+      }
+    },
+  };
+}
+
 // --- row mappers -----------------------------------------------------------
 
 const iso = (v: Date | string | null): string | null =>
@@ -118,33 +190,23 @@ function mapStep(r: StepRow): StepRecord {
 }
 
 /**
- * A `WorkflowStore` backed by Postgres (raw `pg`). Partition-scoped at
- * construction; every query is additionally filtered by `partition_key` as
- * defense-in-depth. Requires the schema from `flowStoreDdl()`.
+ * A `WorkflowStore` over Postgres, addressing raw parameterized SQL through an
+ * injected {@link SqlExecutor}. Partition-scoped at construction; every query is
+ * additionally filtered by `partition_key` as defense-in-depth. Requires the two
+ * tables from `flowStoreDdl()` (or the column-sets in `@octabits-io/flow/store-pg/schema`).
+ *
+ * The executor decides *how* queries run: {@link createPgWorkflowStore} wires a
+ * plain pool; a host that wants Row Level Security injects an executor whose
+ * `transaction` sets the tenant GUC, so the store's own transactions run scoped.
  */
-export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore {
-  const { pool, partitionKey } = deps;
+export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
+  const { exec, partitionKey } = deps;
   const schema = deps.schema ?? 'public';
   const WF = `${schema}.flow_workflow`;
   const STEP = `${schema}.flow_workflow_step`;
 
-  async function withTx<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-    const client = await pool.connect();
-    try {
-      await client.query('BEGIN');
-      const result = await fn(client);
-      await client.query('COMMIT');
-      return result;
-    } catch (e) {
-      await client.query('ROLLBACK').catch(() => {});
-      throw e;
-    } finally {
-      client.release();
-    }
-  }
-
   async function createWorkflow(params: CreateWorkflowParams): Promise<CreatedWorkflow> {
-    return withTx(async (client) => {
+    return exec.transaction(async (client) => {
       // ON CONFLICT targets the partial unique index on (partition_key, idempotency_key).
       // A null key is excluded from the index, so unkeyed starts never conflict.
       const wfRes = await client.query<{ id: string }>(
@@ -205,17 +267,17 @@ export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore 
   }
 
   async function getWorkflow(workflowId: WorkflowId): Promise<WorkflowRecord | null> {
-    const res = await pool.query<WorkflowRow>(`SELECT * FROM ${WF} WHERE id = $1 AND partition_key = $2`, [workflowId, partitionKey]);
+    const res = await exec.query<WorkflowRow>(`SELECT * FROM ${WF} WHERE id = $1 AND partition_key = $2`, [workflowId, partitionKey]);
     return res.rows[0] ? mapWorkflow(res.rows[0]) : null;
   }
 
   async function getStep(stepId: StepId): Promise<StepRecord | null> {
-    const res = await pool.query<StepRow>(`SELECT * FROM ${STEP} WHERE id = $1 AND partition_key = $2`, [stepId, partitionKey]);
+    const res = await exec.query<StepRow>(`SELECT * FROM ${STEP} WHERE id = $1 AND partition_key = $2`, [stepId, partitionKey]);
     return res.rows[0] ? mapStep(res.rows[0]) : null;
   }
 
   async function listSteps(workflowId: WorkflowId): Promise<StepRecord[]> {
-    const res = await pool.query<StepRow>(
+    const res = await exec.query<StepRow>(
       `SELECT * FROM ${STEP} WHERE workflow_id = $1 AND partition_key = $2 ORDER BY id`,
       [workflowId, partitionKey],
     );
@@ -223,49 +285,49 @@ export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore 
   }
 
   async function markStepRunning(stepId: StepId, startedAt: string): Promise<void> {
-    await pool.query(
+    await exec.query(
       `UPDATE ${STEP} SET status = 'running', started_at = $2, attempts = attempts + 1 WHERE id = $1 AND partition_key = $3`,
       [stepId, startedAt, partitionKey],
     );
   }
 
   async function markStepPending(stepId: StepId): Promise<void> {
-    await pool.query(
+    await exec.query(
       `UPDATE ${STEP} SET status = 'pending' WHERE id = $1 AND partition_key = $2`,
       [stepId, partitionKey],
     );
   }
 
   async function markStepWaiting(stepId: StepId): Promise<void> {
-    await pool.query(
+    await exec.query(
       `UPDATE ${STEP} SET status = 'waiting' WHERE id = $1 AND partition_key = $2`,
       [stepId, partitionKey],
     );
   }
 
   async function markStepMapping(stepId: StepId): Promise<void> {
-    await pool.query(
+    await exec.query(
       `UPDATE ${STEP} SET status = 'mapping' WHERE id = $1 AND partition_key = $2`,
       [stepId, partitionKey],
     );
   }
 
   async function markStepCompensating(stepId: StepId): Promise<void> {
-    await pool.query(
+    await exec.query(
       `UPDATE ${STEP} SET status = 'compensating' WHERE id = $1 AND partition_key = $2`,
       [stepId, partitionKey],
     );
   }
 
   async function markStepCompensated(stepId: StepId, error?: string): Promise<void> {
-    await pool.query(
+    await exec.query(
       `UPDATE ${STEP} SET status = 'compensated', error = COALESCE($3, error) WHERE id = $1 AND partition_key = $2`,
       [stepId, partitionKey, error ?? null],
     );
   }
 
   async function addChildSteps(workflowId: WorkflowId, parentStepId: StepId, children: AddChildStep[]): Promise<StepRecord[]> {
-    return withTx(async (client) => {
+    return exec.transaction(async (client) => {
       const created: StepRecord[] = [];
       for (const c of children) {
         const res = await client.query<StepRow>(
@@ -285,7 +347,7 @@ export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore 
   }
 
   async function listChildSteps(parentStepId: StepId): Promise<StepRecord[]> {
-    const res = await pool.query<StepRow>(
+    const res = await exec.query<StepRow>(
       `SELECT * FROM ${STEP} WHERE parent_step_id = $1 AND partition_key = $2 ORDER BY id`,
       [parentStepId, partitionKey],
     );
@@ -293,7 +355,7 @@ export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore 
   }
 
   async function completeStep(params: CompleteStepParams): Promise<void> {
-    await withTx(async (client) => {
+    await exec.transaction(async (client) => {
       await client.query(
         `UPDATE ${STEP} SET status = 'completed', output = $2::jsonb, completed_at = $3 WHERE id = $1 AND partition_key = $4`,
         [params.stepId, JSON.stringify(params.output), params.completedAt, partitionKey],
@@ -306,7 +368,7 @@ export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore 
   }
 
   async function failStep(params: FailStepParams): Promise<void> {
-    await withTx(async (client) => {
+    await exec.transaction(async (client) => {
       await client.query(
         `UPDATE ${STEP} SET status = 'failed', error = $2, completed_at = $3 WHERE id = $1 AND partition_key = $4`,
         [params.stepId, params.error, params.completedAt, partitionKey],
@@ -319,21 +381,21 @@ export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore 
   }
 
   async function skipStep(stepId: StepId, reason: string): Promise<void> {
-    await pool.query(
+    await exec.query(
       `UPDATE ${STEP} SET status = 'skipped', error = $2 WHERE id = $1 AND partition_key = $3`,
       [stepId, reason, partitionKey],
     );
   }
 
   async function skipPendingSteps(workflowId: WorkflowId, reason: string): Promise<void> {
-    await pool.query(
+    await exec.query(
       `UPDATE ${STEP} SET status = 'skipped', error = $2 WHERE workflow_id = $1 AND partition_key = $3 AND status IN ('pending', 'waiting')`,
       [workflowId, reason, partitionKey],
     );
   }
 
   async function finishWorkflow(params: FinishWorkflowParams): Promise<void> {
-    await pool.query(
+    await exec.query(
       `UPDATE ${WF}
          SET status = $2,
              output = COALESCE($3::jsonb, output),
@@ -369,14 +431,14 @@ export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore 
     args.push(filters.limit ?? 50);
     const limitIdx = args.length;
 
-    const wfRes = await pool.query<WorkflowRow>(
+    const wfRes = await exec.query<WorkflowRow>(
       `SELECT * FROM ${WF} WHERE ${conds.join(' AND ')} ORDER BY id DESC LIMIT $${limitIdx}`,
       args,
     );
     if (wfRes.rows.length === 0) return [];
 
     const ids = wfRes.rows.map((r) => Number(r.id));
-    const stepRes = await pool.query<StepRow>(
+    const stepRes = await exec.query<StepRow>(
       `SELECT * FROM ${STEP} WHERE workflow_id = ANY($1::bigint[]) AND partition_key = $2 ORDER BY id`,
       [ids, partitionKey],
     );
@@ -391,12 +453,12 @@ export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore 
   }
 
   async function listRunningWorkflows(): Promise<WorkflowRecord[]> {
-    const res = await pool.query<WorkflowRow>(`SELECT * FROM ${WF} WHERE partition_key = $1 AND status = 'running'`, [partitionKey]);
+    const res = await exec.query<WorkflowRow>(`SELECT * FROM ${WF} WHERE partition_key = $1 AND status = 'running'`, [partitionKey]);
     return res.rows.map(mapWorkflow);
   }
 
   async function findStuckSteps(workflowId: WorkflowId, cutoff: string): Promise<StepRecord[]> {
-    const res = await pool.query<StepRow>(
+    const res = await exec.query<StepRow>(
       `SELECT * FROM ${STEP}
         WHERE workflow_id = $1 AND partition_key = $2 AND status = 'running' AND started_at IS NOT NULL AND started_at < $3::timestamptz`,
       [workflowId, partitionKey, cutoff],
@@ -426,6 +488,21 @@ export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore 
     listRunningWorkflows,
     findStuckSteps,
   };
+}
+
+/**
+ * A `WorkflowStore` backed by a `pg` {@link Pool} — the batteries-included
+ * adapter that owns its own connections/transactions (via {@link poolExecutor})
+ * and requires the tables from `flowStoreDdl()`. Unchanged public surface: hosts
+ * that need Row Level Security or their own migrations should instead build an
+ * executor and call {@link createWorkflowStore}.
+ */
+export function createPgWorkflowStore(deps: PgWorkflowStoreDeps): WorkflowStore {
+  return createWorkflowStore({
+    exec: poolExecutor(deps.pool),
+    partitionKey: deps.partitionKey,
+    schema: deps.schema,
+  });
 }
 
 /** Convenience: apply the flow-store schema to a database. */
