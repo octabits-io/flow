@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 import type { StepGate, StepGateRequest, StepGateDecision, ConcurrencyRule, RateRule } from '../core';
 import { createSchemaDdl } from './ddl';
+import { type SqlExecutor, poolExecutor } from './executor';
 
 // ============================================================================
 // Postgres StepGate adapter (shared, multi-worker — gap 03)
@@ -72,12 +73,23 @@ export interface PgStepGateConfig {
   tables?: { rateBucket?: string; lease?: string };
 }
 
+export interface StepGateConfig extends Omit<PgStepGateConfig, 'pool'> {
+  /** How the gate talks to Postgres (pool-backed, RLS-scoped, …). */
+  exec: SqlExecutor;
+}
+
+/** Sentinel thrown to roll back the acquire transaction when the concurrency cap is hit. */
+const CAP_HIT = Symbol('flow.gate.capHit');
+
 /**
- * A Postgres-backed {@link StepGate}: global concurrency caps + rate limits shared
- * across all workers. Drop-in for the in-memory gate via `WorkflowEngineDeps.gate`.
+ * A Postgres-backed {@link StepGate} addressing all SQL through an injected
+ * {@link SqlExecutor}, so a host can run the concurrency/rate SQL under Row Level
+ * Security (inject an executor that sets the tenant GUC) instead of a plain pool.
+ * Global concurrency caps + rate limits shared across all workers; drop-in for
+ * the in-memory gate via `WorkflowEngineDeps.gate`.
  */
-export function createPgStepGate(config: PgStepGateConfig): StepGate {
-  const { pool, partitionKey } = config;
+export function createStepGate(config: StepGateConfig): StepGate {
+  const { exec, partitionKey } = config;
   const schema = config.schema ?? 'public';
   const RATE = `${schema}.${config.tables?.rateBucket ?? DEFAULT_RATE_TABLE}`;
   const LEASE = `${schema}.${config.tables?.lease ?? DEFAULT_LEASE_TABLE}`;
@@ -85,7 +97,7 @@ export function createPgStepGate(config: PgStepGateConfig): StepGate {
   const concurrencyRetry = Math.max(1, config.concurrencyRetrySeconds ?? 1);
 
   async function releaseLease(req: StepGateRequest): Promise<void> {
-    await pool.query(
+    await exec.query(
       `DELETE FROM ${LEASE} WHERE partition_key = $1 AND step_type = $2 AND step_id = $3`,
       [partitionKey, req.stepType, req.stepId],
     );
@@ -93,46 +105,43 @@ export function createPgStepGate(config: PgStepGateConfig): StepGate {
 
   /** Reserve a concurrency slot atomically. Returns whether a slot was granted. */
   async function acquireLease(req: StepGateRequest, cap: number): Promise<boolean> {
-    const client = await pool.connect();
     try {
-      await client.query('BEGIN');
-      // Serialize acquire for this (partition, step_type) so count-then-insert is race-free.
-      await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${partitionKey}:${req.stepType}`]);
-      await client.query(
-        `DELETE FROM ${LEASE} WHERE partition_key = $1 AND step_type = $2 AND expires_at < now()`,
-        [partitionKey, req.stepType],
-      );
-      // Exclude this step's own lease so a re-delivery re-acquires its slot idempotently.
-      const countRes = await client.query(
-        `SELECT count(*)::int AS n FROM ${LEASE} WHERE partition_key = $1 AND step_type = $2 AND step_id <> $3`,
-        [partitionKey, req.stepType, req.stepId],
-      );
-      const active = (countRes.rows[0]?.n as number) ?? 0;
-      if (active >= cap) {
-        await client.query('ROLLBACK');
-        return false;
-      }
-      await client.query(
-        `INSERT INTO ${LEASE} (partition_key, step_type, step_id, expires_at)
-         VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval)
-         ON CONFLICT (partition_key, step_type, step_id)
-         DO UPDATE SET acquired_at = now(), expires_at = EXCLUDED.expires_at`,
-        [partitionKey, req.stepType, req.stepId, String(leaseTtl)],
-      );
-      await client.query('COMMIT');
-      return true;
+      return await exec.transaction(async (tx) => {
+        // Serialize acquire for this (partition, step_type) so count-then-insert is race-free.
+        // The advisory lock is transaction-scoped — released on COMMIT/ROLLBACK.
+        await tx.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`${partitionKey}:${req.stepType}`]);
+        await tx.query(
+          `DELETE FROM ${LEASE} WHERE partition_key = $1 AND step_type = $2 AND expires_at < now()`,
+          [partitionKey, req.stepType],
+        );
+        // Exclude this step's own lease so a re-delivery re-acquires its slot idempotently.
+        const countRes = await tx.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM ${LEASE} WHERE partition_key = $1 AND step_type = $2 AND step_id <> $3`,
+          [partitionKey, req.stepType, req.stepId],
+        );
+        const active = countRes.rows[0]?.n ?? 0;
+        // Throw the sentinel to roll back (dropping the expired-lease cleanup too),
+        // preserving the prior pool-based behavior exactly.
+        if (active >= cap) throw CAP_HIT;
+        await tx.query(
+          `INSERT INTO ${LEASE} (partition_key, step_type, step_id, expires_at)
+           VALUES ($1, $2, $3, now() + ($4 || ' seconds')::interval)
+           ON CONFLICT (partition_key, step_type, step_id)
+           DO UPDATE SET acquired_at = now(), expires_at = EXCLUDED.expires_at`,
+          [partitionKey, req.stepType, req.stepId, String(leaseTtl)],
+        );
+        return true;
+      });
     } catch (e) {
-      await client.query('ROLLBACK').catch(() => {});
+      if (e === CAP_HIT) return false;
       throw e;
-    } finally {
-      client.release();
     }
   }
 
   /** Consume a rate token atomically (refill-then-decrement in one UPDATE). */
   async function consumeToken(req: StepGateRequest, rule: RateRule): Promise<boolean> {
     const capacity = rule.burst ?? Math.max(1, Math.ceil(rule.perSecond));
-    const res = await pool.query(
+    const res = await exec.query(
       `INSERT INTO ${RATE} AS bucket (partition_key, step_type, tokens, updated_at)
        VALUES ($1, $2, $3, now())
        ON CONFLICT (partition_key, step_type) DO UPDATE
@@ -175,4 +184,14 @@ export function createPgStepGate(config: PgStepGateConfig): StepGate {
       };
     },
   };
+}
+
+/**
+ * A Postgres-backed {@link StepGate} over a `pg` {@link Pool} — the
+ * batteries-included adapter (via {@link poolExecutor}). Hosts that need Row
+ * Level Security should build an executor and call {@link createStepGate}.
+ */
+export function createPgStepGate(config: PgStepGateConfig): StepGate {
+  const { pool, ...rest } = config;
+  return createStepGate({ exec: poolExecutor(pool), ...rest });
 }

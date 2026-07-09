@@ -1,4 +1,4 @@
-import type { Pool, PoolClient } from 'pg';
+import type { Pool } from 'pg';
 import type {
   WorkflowStore,
   CreateWorkflowParams,
@@ -16,6 +16,12 @@ import type {
   StepStatus,
   WorkflowWithSteps,
 } from '../core';
+import { type SqlExecutor, poolExecutor } from './executor';
+
+// The executor seam (`SqlExecutor`, `SqlResult`, `poolExecutor`) moved to
+// `./executor` so the store, gate and event sink can share one seam. Re-exported
+// here for backward compatibility with `@octabits-io/flow/store-pg` consumers.
+export { type SqlExecutor, type SqlResult, poolExecutor, toExecutor } from './executor';
 
 export interface PgWorkflowStoreDeps {
   pool: Pool;
@@ -25,29 +31,6 @@ export interface PgWorkflowStoreDeps {
   schema?: string;
 }
 
-// --- executor seam ---------------------------------------------------------
-
-/** Minimal query result shape the store consumes (a structural subset of `pg`'s `QueryResult`). */
-export interface SqlResult<R> {
-  rows: R[];
-  rowCount: number | null;
-}
-
-/**
- * The store's only contact with the database. `createWorkflowStore` issues raw
- * parameterized SQL through this seam and never opens its own connections, so the
- * *host* decides how queries run: a plain pool ({@link poolExecutor}), or a
- * connection that first sets transaction-local GUCs for Row Level Security.
- *
- * `transaction(fn)` MUST run every `fn` query on a single connection inside one
- * DB transaction; the passed executor is that same-connection handle. The store
- * never nests transactions.
- */
-export interface SqlExecutor {
-  query<R = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<SqlResult<R>>;
-  transaction<T>(fn: (tx: SqlExecutor) => Promise<T>): Promise<T>;
-}
-
 export interface WorkflowStoreDeps {
   /** How the store talks to Postgres (pool-backed, RLS-scoped, …). */
   exec: SqlExecutor;
@@ -55,46 +38,6 @@ export interface WorkflowStoreDeps {
   partitionKey: string;
   /** Schema the flow tables live in. Default 'public'. */
   schema?: string;
-}
-
-/**
- * Build a {@link SqlExecutor} over a `pg` {@link Pool}: top-level queries run on
- * the pool (autocommit); `transaction` checks out a client and wraps `fn` in
- * `BEGIN`/`COMMIT` (rolling back and always releasing on error). This is the
- * batteries-included executor used by {@link createPgWorkflowStore}.
- */
-export function poolExecutor(pool: Pool): SqlExecutor {
-  const fromClient = (client: PoolClient): SqlExecutor => ({
-    async query(sql, params) {
-      const res = await client.query(sql, params as unknown[]);
-      return { rows: res.rows, rowCount: res.rowCount };
-    },
-    // Already inside a transaction — reuse the same connection; the store never nests.
-    transaction(fn) {
-      return fn(fromClient(client));
-    },
-  });
-
-  return {
-    async query(sql, params) {
-      const res = await pool.query(sql, params as unknown[]);
-      return { rows: res.rows, rowCount: res.rowCount };
-    },
-    async transaction(fn) {
-      const client = await pool.connect();
-      try {
-        await client.query('BEGIN');
-        const result = await fn(fromClient(client));
-        await client.query('COMMIT');
-        return result;
-      } catch (e) {
-        await client.query('ROLLBACK').catch(() => {});
-        throw e;
-      } finally {
-        client.release();
-      }
-    },
-  };
 }
 
 // --- row mappers -----------------------------------------------------------
@@ -193,7 +136,7 @@ function mapStep(r: StepRow): StepRecord {
  * A `WorkflowStore` over Postgres, addressing raw parameterized SQL through an
  * injected {@link SqlExecutor}. Partition-scoped at construction; every query is
  * additionally filtered by `partition_key` as defense-in-depth. Requires the two
- * tables from `flowStoreDdl()` (or the column-sets in `@octabits-io/flow/store-pg/schema`).
+ * tables from `flowStoreDdl()`.
  *
  * The executor decides *how* queries run: {@link createPgWorkflowStore} wires a
  * plain pool; a host that wants Row Level Security injects an executor whose

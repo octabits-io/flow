@@ -1,6 +1,7 @@
 import type { Pool } from 'pg';
 import type { FlowObserver, FlowEvent, FlowEventType, WorkflowId } from '../core';
 import { createSchemaDdl } from './ddl';
+import { type SqlExecutor, poolExecutor, toExecutor } from './executor';
 
 /**
  * DDL for the append-only run-history table (gap 10). Apply once at deploy time (alongside
@@ -39,6 +40,15 @@ export interface PgEventSinkDeps {
   schema?: string;
 }
 
+export interface EventSinkDeps {
+  /** How the sink talks to Postgres (pool-backed, RLS-scoped, …). */
+  exec: SqlExecutor;
+  /** Partition this sink is bound to (e.g. a tenant id). */
+  partitionKey: string;
+  /** Schema the flow tables live in. Default 'public'. */
+  schema?: string;
+}
+
 /**
  * A `FlowObserver` that appends every engine event to `flow_step_event` (gap 10). `record` is
  * fire-and-forget (it never throws and never blocks the engine); call `flush()` to await the
@@ -48,8 +58,15 @@ export interface PgEventSink extends FlowObserver {
   flush(): Promise<void>;
 }
 
-export function createPgEventSink(deps: PgEventSinkDeps): PgEventSink {
-  const { pool, partitionKey } = deps;
+/**
+ * A `FlowObserver` that appends engine events to `flow_step_event` through an
+ * injected {@link SqlExecutor}, so a host can run the write under Row Level
+ * Security (inject an executor that sets the tenant GUC) instead of a plain pool.
+ * `record` is fire-and-forget (never throws, never blocks the engine); `flush()`
+ * awaits the in-flight inserts.
+ */
+export function createEventSink(deps: EventSinkDeps): PgEventSink {
+  const { exec, partitionKey } = deps;
   const schema = deps.schema ?? 'public';
   const EVT = `${schema}.flow_step_event`;
   const pending = new Set<Promise<unknown>>();
@@ -58,7 +75,7 @@ export function createPgEventSink(deps: PgEventSinkDeps): PgEventSink {
     record(event: FlowEvent) {
       // Guard the host's partition: only persist events for this sink's partition.
       if (event.partitionKey !== partitionKey) return;
-      const p = pool
+      const p = exec
         .query(
           `INSERT INTO ${EVT}
              (partition_key, workflow_id, workflow_type, step_id, step_key, step_type, event_type, attempt, duration_ms, error, at)
@@ -91,13 +108,26 @@ export function createPgEventSink(deps: PgEventSinkDeps): PgEventSink {
   };
 }
 
-/** Read a workflow's run history (gap 10), ordered oldest-first. */
+/**
+ * A `FlowObserver` backed by a `pg` {@link Pool} — the batteries-included sink
+ * (via {@link poolExecutor}). Hosts that need Row Level Security should build an
+ * executor and call {@link createEventSink} instead.
+ */
+export function createPgEventSink(deps: PgEventSinkDeps): PgEventSink {
+  return createEventSink({ exec: poolExecutor(deps.pool), partitionKey: deps.partitionKey, schema: deps.schema });
+}
+
+/**
+ * Read a workflow's run history (gap 10), ordered oldest-first. Accepts either a
+ * `pg` {@link Pool} (batteries-included) or a host's {@link SqlExecutor} (e.g.
+ * RLS-scoped) — both route through the same seam.
+ */
 export async function readFlowEvents(
-  pool: Pool,
+  db: Pool | SqlExecutor,
   params: { workflowId: WorkflowId; partitionKey: string; schema?: string },
 ): Promise<FlowEvent[]> {
   const EVT = `${params.schema ?? 'public'}.flow_step_event`;
-  const res = await pool.query(
+  const res = await toExecutor(db).query<FlowEventRow>(
     `SELECT * FROM ${EVT} WHERE partition_key = $1 AND workflow_id = $2 ORDER BY id`,
     [params.partitionKey, params.workflowId],
   );
@@ -115,3 +145,18 @@ export async function readFlowEvents(
     error: r.error ?? undefined,
   }));
 }
+
+/** Raw `flow_step_event` row as returned by `pg` (bigint→string, integer→number, timestamptz→Date). */
+type FlowEventRow = {
+  partition_key: string;
+  workflow_id: string;
+  workflow_type: string | null;
+  step_id: string | null;
+  step_key: string | null;
+  step_type: string | null;
+  event_type: string;
+  attempt: number | null;
+  duration_ms: number | null;
+  error: string | null;
+  at: Date | string;
+};
