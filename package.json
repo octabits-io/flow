@@ -20,11 +20,6 @@
       "import": "./dist/store-pg/index.js",
       "default": "./dist/store-pg/index.js"
     },
-    "./store-pg/schema": {
-      "types": "./dist/store-pg/schema.d.ts",
-      "import": "./dist/store-pg/schema.js",
-      "default": "./dist/store-pg/schema.js"
-    },
     "./dispatcher-pgboss": {
       "types": "./dist/dispatcher-pgboss/index.d.ts",
       "import": "./dist/dispatcher-pgboss/index.js",
@@ -72,7 +67,6 @@
   "peerDependencies": {
     "@ai-sdk/provider": "^4.0.0",
     "ai": "^7.0.0",
-    "drizzle-orm": "^0.45.0",
     "pg": "^8.0.0",
     "pg-boss": "^12.0.0",
     "typescript": "^5 || ^6",
@@ -83,9 +77,6 @@
       "optional": true
     },
     "ai": {
-      "optional": true
-    },
-    "drizzle-orm": {
       "optional": true
     },
     "pg": {
@@ -101,7 +92,6 @@
     "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",
     "ai": "^7.0.18",
-    "drizzle-orm": "^0.45.2",
     "pg": "^8.22.0",
     "pg-boss": "^12.25.1",
     "testcontainers": "^12.0.4",

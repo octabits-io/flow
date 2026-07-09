@@ -5,7 +5,6 @@ export default defineConfig({
     index: "src/index.ts",
     "ai/index": "src/ai/index.ts",
     "store-pg/index": "src/store-pg/index.ts",
-    "store-pg/schema": "src/store-pg/schema.ts",
     "dispatcher-pgboss/index": "src/dispatcher-pgboss/index.ts",
   },
   format: "esm",
