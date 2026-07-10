@@ -216,6 +216,51 @@ describe('createWorkflowEngine', () => {
     expect(stepB.status).toBe('skipped');
   });
 
+  it('finalizes as failed when a parallel branch completes after another branch already failed', async () => {
+    // Regression: fail root `a` while independent root `img` is still queued.
+    // The failure path can't finalize (img not terminal); when img later
+    // completes, the completion path must route through the failure check —
+    // previously it treated the failed step as non-terminal and the workflow
+    // was stranded in `running` forever.
+    const input = z.object({});
+    const a = defineStep<{}, { ok: boolean }, Ctx>({
+      type: 'pf:a',
+      workflowInputSchema: input,
+      outputSchema: z.object({ ok: z.boolean() }),
+      handler: async () => Promise.reject(new Error('boom in a')),
+    });
+    const img = defineStep<{}, { ok: boolean }, Ctx>({
+      type: 'pf:img',
+      workflowInputSchema: input,
+      outputSchema: z.object({ ok: z.boolean() }),
+      handler: async () => ({ ok: true }),
+    });
+    const b = defineStep<{}, { ok: boolean }, Ctx, { a: typeof a }>({
+      type: 'pf:b',
+      workflowInputSchema: input,
+      outputSchema: z.object({ ok: z.boolean() }),
+      dependencies: { a },
+      handler: async () => ({ ok: true }),
+    });
+    const wf = buildWorkflow<{}, Ctx>({ type: 'parallelfail', inputSchema: input, steps: { a, img, b } });
+
+    const h = harness();
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    expect(started.ok).toBe(true);
+    if (!started.ok) return;
+    // FIFO drain: `a` fails first (img still queued), then `img` completes.
+    await h.drain();
+
+    const status = await h.engine.getWorkflowStatus(started.value.workflowId);
+    expect(status.ok).toBe(true);
+    if (!status.ok) return;
+    expect(status.value.status).toBe('failed');
+    expect(status.value.steps.find((s) => s.key === 'a')!.status).toBe('failed');
+    expect(status.value.steps.find((s) => s.key === 'img')!.status).toBe('completed');
+    expect(status.value.steps.find((s) => s.key === 'b')!.status).toBe('skipped');
+  });
+
   it('fails a step whose output violates its schema', async () => {
     const input = z.object({});
     const a = defineStep<{}, { n: number }, Ctx>({

@@ -541,6 +541,19 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       await dispatchReadyStep(workflowId, readyStep.id, readyStep.key, readyStep.type);
     }
 
+    // A sibling branch may have failed while this step was in flight — the
+    // workflow can never complete, so route through the failure path (it
+    // finalizes once every remaining step settles). Without this, a workflow
+    // whose LAST in-flight step completes after an earlier parallel failure
+    // is stranded in `running` forever: the failure path saw a non-terminal
+    // step and waited, and this completion path would treat the failed step
+    // as non-terminal and wait too. (The map-child path already re-checks —
+    // see onChildCompleted.)
+    if (keyedSteps.some((s) => s.id !== stepId && s.status === 'failed')) {
+      await checkWorkflowFailure(workflowId);
+      return;
+    }
+
     // All terminal (treat the just-completed step as completed even though listSteps may be stale)
     const allTerminal = keyedSteps.every((s) => s.id === stepId || s.status === 'completed' || s.status === 'skipped');
     if (allTerminal && newlyReady.length === 0) {
