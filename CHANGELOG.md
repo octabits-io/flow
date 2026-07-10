@@ -1,5 +1,11 @@
 # @octabits-io/flow
 
+## 0.11.1
+
+### Patch Changes
+
+- [`eae8882`](https://github.com/octabits-io/platform/commit/eae888215cf06b50c1da2a71f424966f7f8ec3f9) - Widen the `typescript` peer range to `^5 || ^6 || ^7` — the packages build and typecheck cleanly under TypeScript 7 (native compiler), and the emitted declarations are semantically identical to the TS 5/6 output.
+
 ## 0.11.0
 
 ### Minor Changes
