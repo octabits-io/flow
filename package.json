@@ -27,14 +27,14 @@
     }
   },
   "scripts": {
-    "build": "tsup",
+    "build": "tsdown",
     "clean": "rm -rf dist",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
     "lint": "node scripts/check-boundaries.mjs",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "tsup"
+    "prepublishOnly": "tsdown"
   },
   "files": [
     "dist",
