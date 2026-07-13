@@ -1,5 +1,5 @@
 /**
- * 09 — Child / sub-workflows (gap 08)
+ * 09 — Child / sub-workflows
  *
  * `defineSubWorkflowStep` starts another (built) workflow and awaits its result. `input(ctx)`
  * maps the parent context to the child's input; the engine starts the child (same partition),

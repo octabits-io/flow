@@ -1,5 +1,5 @@
 /**
- * 10 — Saga compensation (gap 09)
+ * 10 — Saga compensation
  *
  * Add an optional `compensate` to a step to undo its side effects. When the workflow fails, the
  * engine runs `compensate` for each COMPLETED step in REVERSE dependency order (statuses

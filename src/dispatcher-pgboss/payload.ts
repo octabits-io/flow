@@ -33,7 +33,7 @@ export const DEFAULT_STEP_QUEUE_CONFIG: Required<StepQueueConfig> = {
 /**
  * The wire payload for a scheduled (or ad-hoc) workflow **start**. Carries the
  * partition plus what `engine.startWorkflow` needs; the host resolves `workflowType`
- * to a definition. `idempotencyKey` is forwarded to the start (gap 05) so overlapping
+ * to a definition. `idempotencyKey` is forwarded to the start so overlapping
  * cron ticks don't double-start.
  */
 export const WIRE_START_PAYLOAD_SCHEMA = z.object({

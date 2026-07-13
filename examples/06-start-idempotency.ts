@@ -1,5 +1,5 @@
 /**
- * 06 — Workflow-start idempotency (gap 05)
+ * 06 — Workflow-start idempotency
  *
  * Pass an `idempotencyKey` when starting. A second start with the same key (per partition)
  * returns the EXISTING workflow instead of creating a duplicate — so a double-click, a retried

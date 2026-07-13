@@ -62,7 +62,7 @@ export interface StartOptions {
    */
   idempotencyKey?: string;
   /**
-   * Internal (gap 08): set by a sub-workflow step to link a child workflow back to the
+   * Internal: set by a sub-workflow step to link a child workflow back to the
    * parent workflow + step that started it, so the parent step resumes when the child ends.
    */
   parentWorkflowId?: WorkflowId;
@@ -120,7 +120,7 @@ export interface StepCompensationContext<TContext = unknown> extends StepExecuti
 }
 
 /**
- * Optional rollback handler (gap 09). On workflow failure the engine runs it once for each
+ * Optional rollback handler. On workflow failure the engine runs it once for each
  * `completed` step, in reverse dependency order, to undo side effects. Best-effort: a throw is
  * logged + surfaced on the step (not retried).
  */
@@ -159,7 +159,7 @@ export interface StepRegistration<TContext = unknown> {
    */
   waitForEvent?: boolean;
   /**
-   * When true, this is a **map** parent (gap 06): its handler returns `{ items: T[] }`;
+   * When true, this is a **map** parent: its handler returns `{ items: T[] }`;
    * the engine spawns one child step (of `childType`) per item, suspends the parent as
    * `mapping`, and completes it with `{ items: childOutputs[] }` once all children finish.
    */
@@ -167,12 +167,12 @@ export interface StepRegistration<TContext = unknown> {
   /** For a map parent: the step `type` registered for its per-item child steps. */
   childType?: string;
   /**
-   * When set, this is a **sub-workflow** step (gap 08): its handler returns the child
+   * When set, this is a **sub-workflow** step: its handler returns the child
    * workflow's input; the engine starts a child workflow from this definition, suspends
    * the parent step as `waiting`, and resumes it with the child's output once it terminates.
    */
   subWorkflowDefinition?: WorkflowDefinition;
-  /** Optional saga rollback handler (gap 09): undoes this step's effects on workflow failure. */
+  /** Optional saga rollback handler: undoes this step's effects on workflow failure. */
   compensate?: StepCompensateHandler<TContext>;
 }
 
@@ -212,7 +212,7 @@ export interface WorkflowRecord {
   error: string | null;
   entityRef: string | null;
   idempotencyKey: string | null;
-  /** For a sub-workflow child (gap 08): the parent workflow + step that started it. */
+  /** For a sub-workflow child: the parent workflow + step that started it. */
   parentWorkflowId: WorkflowId | null;
   parentStepId: StepId | null;
   totalSteps: number;
@@ -237,7 +237,7 @@ export interface StepRecord {
   metadata: Record<string, unknown> | null;
   /** Number of execution attempts so far (incremented each time the step runs). */
   attempts: number;
-  /** For a map child (gap 06): the id of its map-parent step; null for normal/keyed steps. */
+  /** For a map child: the id of its map-parent step; null for normal/keyed steps. */
   parentStepId: StepId | null;
   startedAt: string | null;
   completedAt: string | null;

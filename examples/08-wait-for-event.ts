@@ -1,5 +1,5 @@
 /**
- * 08 — Signals / waitForEvent (gap 07)
+ * 08 — Signals / waitForEvent
  *
  * `defineWaitStep` suspends once its dependencies complete (status `waiting`) — its handler
  * never runs. It resumes only when the host calls `engine.resumeStep(workflowId, stepKey,

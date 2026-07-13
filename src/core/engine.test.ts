@@ -515,7 +515,7 @@ describe('createWorkflowEngine', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Per-step retry & timeout policy (gap 01)
+// Per-step retry & timeout policy
 // ---------------------------------------------------------------------------
 
 describe('per-step retry policy', () => {
@@ -643,7 +643,7 @@ describe('per-step retry policy', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Durable sleep / delayed steps (gap 02)
+// Durable sleep / delayed steps
 // ---------------------------------------------------------------------------
 
 describe('durable sleep / delayed steps', () => {
@@ -735,7 +735,7 @@ describe('per-step retry policy (continued)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Admission gate: concurrency / rate limiting (gap 03)
+// Admission gate: concurrency / rate limiting
 // ---------------------------------------------------------------------------
 
 describe('admission gate', () => {
@@ -791,7 +791,7 @@ describe('admission gate', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Workflow-start idempotency (gap 05)
+// Workflow-start idempotency
 // ---------------------------------------------------------------------------
 
 describe('workflow-start idempotency', () => {
@@ -839,7 +839,7 @@ describe('workflow-start idempotency', () => {
 });
 
 // ---------------------------------------------------------------------------
-// waitForEvent / signals (gap 07)
+// waitForEvent / signals
 // ---------------------------------------------------------------------------
 
 describe('waitForEvent / signals', () => {
@@ -934,7 +934,7 @@ describe('waitForEvent / signals', () => {
 });
 
 // ---------------------------------------------------------------------------
-// dynamic fan-out / map (gap 06)
+// dynamic fan-out / map
 // ---------------------------------------------------------------------------
 
 describe('dynamic fan-out / map', () => {
@@ -1050,7 +1050,7 @@ describe('dynamic fan-out / map', () => {
 });
 
 // ---------------------------------------------------------------------------
-// child / sub-workflows (gap 08)
+// child / sub-workflows
 // ---------------------------------------------------------------------------
 
 describe('child / sub-workflows', () => {
@@ -1126,7 +1126,7 @@ describe('child / sub-workflows', () => {
 });
 
 // ---------------------------------------------------------------------------
-// compensation / saga (gap 09)
+// compensation / saga
 // ---------------------------------------------------------------------------
 
 describe('compensation / saga', () => {
@@ -1203,7 +1203,7 @@ describe('compensation / saga', () => {
 });
 
 // ---------------------------------------------------------------------------
-// observability — events + spans (gap 10)
+// observability — events + spans
 // ---------------------------------------------------------------------------
 
 describe('observability', () => {

@@ -50,17 +50,17 @@ export interface TypedStep<
   readonly delayMs?: number;
   /** When true, the step suspends (waiting) until `engine.resumeStep` delivers an event. */
   readonly waitForEvent?: boolean;
-  /** When true, this is a map parent (gap 06) — see `defineMapStep`. */
+  /** When true, this is a map parent — see `defineMapStep`. */
   readonly map?: boolean;
   /** For a map parent: the step type registered for per-item children. */
   readonly childType?: string;
   /** For a map parent: the child step's registration, registered alongside the parent. */
   readonly childRegistration?: { type: string; handler: StepHandler<TContext>; retry?: RetryPolicy; timeoutMs?: number };
-  /** For a sub-workflow step (gap 08): the child workflow definition the engine starts. */
+  /** For a sub-workflow step: the child workflow definition the engine starts. */
   readonly subWorkflowDefinition?: WorkflowDefinition;
   /** For a sub-workflow step: registers the child workflow's step handlers alongside the parent. */
   readonly subWorkflowRegister?: (registry: StepHandlerRegistry<TContext>) => void;
-  /** Untyped saga rollback handler (gap 09), built from the typed `compensate` config. */
+  /** Untyped saga rollback handler, built from the typed `compensate` config. */
   readonly compensate?: StepCompensateHandler<TContext>;
 }
 
@@ -113,7 +113,7 @@ interface DefineStepConfig<
   /** When true, the step suspends (waiting) until `engine.resumeStep` delivers an event. */
   waitForEvent?: boolean;
   /**
-   * Optional saga rollback handler (gap 09): on workflow failure the engine runs it once for
+   * Optional saga rollback handler: on workflow failure the engine runs it once for
    * this step (if it completed), in reverse dependency order. Receives the typed context plus
    * the step's own `output` (what to undo). Best-effort — a throw is logged + surfaced.
    */
@@ -260,7 +260,7 @@ export function defineWaitStep<
 }
 
 /**
- * Define a **map** step: dynamic fan-out (gap 06). `items(ctx)` produces a runtime-sized
+ * Define a **map** step: dynamic fan-out. `items(ctx)` produces a runtime-sized
  * list from the step's deps/input; the engine spawns one child per item (each running
  * `each(item, …)` with its own retry/timeout), suspends the parent as `mapping`, and
  * completes it with `{ items: childOutputs[] }` (ordered) once all children finish. A
@@ -331,7 +331,7 @@ export function defineMapStep<
 }
 
 /**
- * Define a **sub-workflow** step (gap 08): once its deps complete, `input(ctx)` maps the
+ * Define a **sub-workflow** step: once its deps complete, `input(ctx)` maps the
  * parent context to the child workflow's input; the engine **starts the child workflow**
  * (sharing the partition), suspends this step as `waiting`, and resumes it with the child's
  * output once the child terminates. A failed/cancelled child fails this step (and cascades).
@@ -484,12 +484,12 @@ export function buildWorkflow<
           subWorkflowDefinition: step.subWorkflowDefinition,
           compensate: step.compensate,
         });
-        // A map step also registers its per-item child handler (gap 06).
+        // A map step also registers its per-item child handler.
         if (step.childRegistration) {
           const c = step.childRegistration;
           registry.register(c.type, c.handler, { retry: c.retry, timeoutMs: c.timeoutMs });
         }
-        // A sub-workflow step also registers the child workflow's step handlers (gap 08).
+        // A sub-workflow step also registers the child workflow's step handlers.
         if (step.subWorkflowRegister) step.subWorkflowRegister(registry);
       }
     },

@@ -1,7 +1,7 @@
 import type { WorkflowId, StepId } from './types';
 
 // ============================================================================
-// Step admission gate (concurrency & rate limiting — gap 03)
+// Step admission gate (concurrency & rate limiting)
 // ============================================================================
 
 export interface StepGateRequest {

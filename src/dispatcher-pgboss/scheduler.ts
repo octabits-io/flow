@@ -3,7 +3,7 @@ import type { Logger } from '../core';
 import { WIRE_START_PAYLOAD_SCHEMA, type WireStartPayload } from './payload';
 
 // ============================================================================
-// Cron / scheduled workflow starts (gap 04)
+// Cron / scheduled workflow starts
 // ============================================================================
 //
 // pg-boss owns the cron: `schedule(queue, cron, data, { key })` enqueues `data` onto
@@ -40,7 +40,7 @@ export interface ScheduleStartInput {
   workflowType: string;
   input?: Record<string, unknown>;
   entityRef?: string;
-  /** Forwarded to the start so overlapping ticks don't double-start (gap 05). */
+  /** Forwarded to the start so overlapping ticks don't double-start. */
   idempotencyKey?: string;
   /** Optional IANA time zone (default UTC). */
   tz?: string;

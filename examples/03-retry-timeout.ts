@@ -1,5 +1,5 @@
 /**
- * 03 — Per-step retry & timeout (gap 01)
+ * 03 — Per-step retry & timeout
  *
  * A step can declare a `retry` policy and a `timeoutMs`. A *retryable* failure (thrown error
  * whose message looks transient — "429", "rate limit", "timeout", "503", …) is retried with

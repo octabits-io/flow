@@ -64,7 +64,7 @@ function backoffDelaySeconds(retry: RetryPolicy | undefined, failedAttemptNo: nu
 }
 
 /**
- * Reverse topological order (gap 09): a step appears before its dependencies, so saga
+ * Reverse topological order: a step appears before its dependencies, so saga
  * compensation undoes effects in the opposite order they were produced. Pure / deterministic.
  */
 function reverseTopologicalOrder(steps: StepRecord[]): StepRecord[] {
@@ -112,9 +112,9 @@ export interface WorkflowEngineDeps<TContext = unknown> {
    * step runs; a denied step is deferred (re-enqueued) without consuming an attempt.
    */
   gate?: StepGate;
-  /** Run-history / metrics sink (gap 10). Receives a `FlowEvent` per transition. Default: no-op. */
+  /** Run-history / metrics sink. Receives a `FlowEvent` per transition. Default: no-op. */
   observer?: FlowObserver;
-  /** Tracer (gap 10): the engine wraps each `executeStep` in a span. Default: no-op. */
+  /** Tracer: the engine wraps each `executeStep` in a span. Default: no-op. */
   tracer?: FlowTracer;
   /** Clock injection point for testability. Defaults to `() => new Date()`. */
   now?: () => Date;
@@ -137,7 +137,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
 
   const nowIso = () => now().toISOString();
 
-  /** Emit a run-history / metrics event (gap 10). Guarded — a faulty observer never breaks a run. */
+  /** Emit a run-history / metrics event. Guarded — a faulty observer never breaks a run. */
   function emit(event: Omit<FlowEvent, 'at' | 'partitionKey'>): void {
     try {
       observer.record({ ...event, partitionKey, at: nowIso() });
@@ -150,14 +150,14 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   // Dispatch helpers
   // --------------------------------------------------------------------------
 
-  /** Durable start delay for a ready step, from its registered `delayMs` (gap 02). */
+  /** Durable start delay for a ready step, from its registered `delayMs`. */
   function readyStepDelay(stepType: string): { startAfterSeconds: number } | undefined {
     const delayMs = registry.getRegistration(stepType)?.delayMs;
     if (!delayMs || delayMs <= 0) return undefined;
     return { startAfterSeconds: Math.ceil(delayMs / 1000) };
   }
 
-  /** Whether a step type suspends on readiness instead of dispatching (gap 07). */
+  /** Whether a step type suspends on readiness instead of dispatching. */
   function isWaitStep(stepType: string): boolean {
     return registry.getRegistration(stepType)?.waitForEvent === true;
   }
@@ -350,7 +350,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       return { ok: true, value: undefined };
     }
 
-    // Admission gate (gap 03): if not admitted, defer by re-enqueueing with the gate's
+    // Admission gate: if not admitted, defer by re-enqueueing with the gate's
     // delay. The step stays `pending` and no attempt is consumed.
     let releaseSlot: (() => void | Promise<void>) | undefined;
     if (gate) {
@@ -487,7 +487,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   }
 
   /**
-   * Deliver an external event to a `waiting` step (gap 07): completes it with `payload`
+   * Deliver an external event to a `waiting` step: completes it with `payload`
    * as its output and advances the DAG. Idempotent — resuming a non-waiting step (e.g. a
    * re-delivered event) is a logged no-op. The host correlates the event to `stepKey`.
    */
@@ -527,7 +527,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     await store.completeStep({ workflowId, stepId, output, completedAt });
 
     const allSteps = await store.listSteps(workflowId);
-    // Map children are internal — only keyed DAG steps drive readiness/termination (gap 06).
+    // Map children are internal — only keyed DAG steps drive readiness/termination.
     const keyedSteps = allSteps.filter((s) => s.parentStepId == null);
     const completedKeys = new Set(keyedSteps.filter((s) => s.status === 'completed').map((s) => s.key));
 
@@ -577,13 +577,13 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
         }
       }
 
-      // If this workflow is a sub-workflow child, settle its parent step (gap 08).
+      // If this workflow is a sub-workflow child, settle its parent step.
       await bridgeSubWorkflow(workflowId);
     }
   }
 
   // --------------------------------------------------------------------------
-  // Dynamic fan-out / map (gap 06)
+  // Dynamic fan-out / map
   // --------------------------------------------------------------------------
 
   /** A map parent produced its item list — spawn one child per item and suspend it. */
@@ -654,7 +654,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   }
 
   // --------------------------------------------------------------------------
-  // Child / sub-workflows (gap 08)
+  // Child / sub-workflows
   // --------------------------------------------------------------------------
 
   /** A sub-workflow step ran — start the child workflow and suspend the parent step. */
@@ -701,7 +701,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   }
 
   // --------------------------------------------------------------------------
-  // Compensation / saga (gap 09)
+  // Compensation / saga
   // --------------------------------------------------------------------------
 
   /**
@@ -781,9 +781,9 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       await store.finishWorkflow({ workflowId, status: 'failed', error: firstFailed?.error ?? 'One or more steps failed', completedAt: nowIso() });
       logger.info('Workflow failed', { workflowId });
       emit({ type: 'workflow.failed', workflowId, error: firstFailed?.error ?? 'One or more steps failed' });
-      // Undo completed steps' side effects in reverse order (gap 09), then…
+      // Undo completed steps' side effects in reverse order, then…
       await compensateWorkflow(workflowId);
-      // …propagate failure to the parent step if this is a sub-workflow child (gap 08).
+      // …propagate failure to the parent step if this is a sub-workflow child.
       await bridgeSubWorkflow(workflowId);
     }
   }
@@ -801,7 +801,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     await store.finishWorkflow({ workflowId, status: 'cancelled', completedAt: nowIso() });
     logger.info('Workflow cancelled', { workflowId });
     emit({ type: 'workflow.cancelled', workflowId });
-    // A cancelled sub-workflow child fails its parent step (gap 08).
+    // A cancelled sub-workflow child fails its parent step.
     await bridgeSubWorkflow(workflowId);
     return { ok: true, value: undefined };
   }

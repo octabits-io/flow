@@ -1,5 +1,5 @@
 /**
- * 04 — Durable sleep / timers (gap 02)
+ * 04 — Durable sleep / timers
  *
  * `defineSleepStep` is a no-op step that, once its dependencies complete, is held in the queue
  * for `sleepMs` before completing — then the DAG advances. The delay is **durable**: it lives

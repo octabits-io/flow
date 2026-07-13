@@ -1,7 +1,7 @@
 import type { WorkflowId, StepId } from './types';
 
 // ============================================================================
-// Run history / metrics — FlowObserver (gap 10)
+// Run history / metrics — FlowObserver
 // ============================================================================
 
 /** Lifecycle event types the engine emits at every workflow/step transition. */
@@ -73,7 +73,7 @@ export function createRecordingObserver(): RecordingObserver {
 }
 
 // ============================================================================
-// Tracing — FlowTracer (gap 10)
+// Tracing — FlowTracer
 // ============================================================================
 
 /** A minimal span handle. Maps 1:1 onto an OpenTelemetry span in an adapter. */

@@ -1,5 +1,5 @@
 /**
- * 11 — Observability: events + spans (gap 10)
+ * 11 — Observability: events + spans
  *
  * The engine emits a `FlowEvent` at every transition (run history / metrics) and wraps each step
  * execution in a span. Both are pluggable and no-op by default. Here we use the in-memory

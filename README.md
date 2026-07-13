@@ -208,10 +208,10 @@ the workflow ends `failed`.
 | Helper | Use it for |
 |---|---|
 | `defineStep({ type, workflowInputSchema, outputSchema, dependencies?, handler, retry?, timeoutMs?, delayMs?, compensate? })` | a normal step |
-| `defineSleepStep({ type, sleepMs, dependencies? })` | a durable no-op delay (gap 02) |
-| `defineWaitStep({ type, outputSchema, dependencies? })` | suspend until `engine.resumeStep` (gap 07) |
-| `defineMapStep({ type, workflowInputSchema, itemOutputSchema, items, each, dependencies?, itemRetry?, itemTimeoutMs? })` | runtime-sized fan-out (gap 06) |
-| `defineSubWorkflowStep({ type, workflowInputSchema, childWorkflow, input, outputSchema?, dependencies? })` | start + await a child workflow (gap 08) |
+| `defineSleepStep({ type, sleepMs, dependencies? })` | a durable no-op delay |
+| `defineWaitStep({ type, outputSchema, dependencies? })` | suspend until `engine.resumeStep` |
+| `defineMapStep({ type, workflowInputSchema, itemOutputSchema, items, each, dependencies?, itemRetry?, itemTimeoutMs? })` | runtime-sized fan-out |
+| `defineSubWorkflowStep({ type, workflowInputSchema, childWorkflow, input, outputSchema?, dependencies? })` | start + await a child workflow |
 | `defineAiStep({ ... })` | a step whose `ctx.context` is an instrumented `AiContext` (AI add-on) |
 
 A handler receives a **typed context**: `ctx.workflowInput` (validated), `ctx.deps`
@@ -324,7 +324,7 @@ await starter.start(async (payload) => {
 
 Each links to a focused, runnable example.
 
-### Retry & timeout — gap 01
+### Retry & timeout
 ```ts
 const flaky = defineStep({
   type: 'call-api', workflowInputSchema, outputSchema,
@@ -336,14 +336,14 @@ const flaky = defineStep({
 A failure is retried (with backoff via the dispatcher's `startAfterSeconds`) up to `maxAttempts`;
 after that the step fails terminally. → [`examples/03-retry-timeout.ts`](./examples/03-retry-timeout.ts)
 
-### Durable sleep — gap 02
+### Durable sleep
 ```ts
 const cooldown = defineSleepStep({ type: 'cooldown', sleepMs: 60 * 60 * 1000, dependencies: { charge } });
 ```
 A no-op step held in the queue for `sleepMs` once ready — durable across restarts (the delay lives
 in the queue, not in memory). → [`examples/04-durable-sleep.ts`](./examples/04-durable-sleep.ts)
 
-### Concurrency & rate limiting — gap 03
+### Concurrency & rate limiting
 ```ts
 const gate = createInMemoryStepGate({
   concurrency: { 'ai:generate': { maxConcurrent: 2 } },
@@ -355,14 +355,14 @@ A gated step is admitted or deferred (re-enqueued) **without consuming a retry a
 `createPgStepGate` for cross-process caps (crash-safe leases + a token bucket in Postgres).
 → [`examples/05-concurrency-rate-limit.ts`](./examples/05-concurrency-rate-limit.ts)
 
-### Start idempotency — gap 05
+### Start idempotency
 ```ts
 await wf.start(engine, input, { idempotencyKey: `import:${fileId}` });
 // a second start with the same key returns the existing workflow instead of duplicating it
 ```
 → [`examples/06-start-idempotency.ts`](./examples/06-start-idempotency.ts)
 
-### Dynamic fan-out / map — gap 06
+### Dynamic fan-out / map
 ```ts
 const resizeAll = defineMapStep({
   type: 'resize-all',
@@ -378,7 +378,7 @@ The engine spawns one child step per item (own retry/gate), suspends the parent 
 completes it with the aggregated outputs. A failed item fails the whole map.
 → [`examples/07-dynamic-map.ts`](./examples/07-dynamic-map.ts)
 
-### Signals / waitForEvent — gap 07
+### Signals / waitForEvent
 ```ts
 const approval = defineWaitStep({ type: 'await-approval', outputSchema: z.object({ approved: z.boolean() }), dependencies: { draft } });
 // …elsewhere, when the webhook/human responds:
@@ -388,7 +388,7 @@ The step suspends (`waiting`) until `resumeStep` delivers the event payload, whi
 output. Idempotent — a re-delivered event is a no-op.
 → [`examples/08-wait-for-event.ts`](./examples/08-wait-for-event.ts)
 
-### Sub-workflows — gap 08
+### Sub-workflows
 ```ts
 const enrich = defineSubWorkflowStep({
   type: 'enrich', workflowInputSchema,
@@ -401,7 +401,7 @@ Starts the child workflow (same partition), suspends the parent step, and resume
 child's output when it terminates. A failed/cancelled child fails the parent step.
 → [`examples/09-sub-workflows.ts`](./examples/09-sub-workflows.ts)
 
-### Saga compensation — gap 09
+### Saga compensation
 ```ts
 const reserve = defineStep({
   type: 'reserve', workflowInputSchema, outputSchema: z.object({ ticketId: z.string() }),

@@ -18,7 +18,7 @@ export interface CreateWorkflowStep {
   input: Record<string, unknown> | null;
 }
 
-/** A map child step to insert at runtime (gap 06). */
+/** A map child step to insert at runtime. */
 export interface AddChildStep {
   /** Synthetic key, e.g. `${parentKey}#${index}`. */
   key: string;
@@ -33,7 +33,7 @@ export interface CreateWorkflowParams {
   metadata?: Record<string, unknown>;
   /** Dedup key (per partition); a collision returns the existing workflow. */
   idempotencyKey?: string;
-  /** Sub-workflow linkage (gap 08): the parent workflow + step that started this child. */
+  /** Sub-workflow linkage: the parent workflow + step that started this child. */
   parentWorkflowId?: WorkflowId;
   parentStepId?: StepId;
   startedAt: string;
@@ -110,12 +110,12 @@ export interface WorkflowStore {
   markStepWaiting(stepId: StepId): Promise<void>;
   /** Flip a map parent to `mapping` — it suspends until all spawned children finish. */
   markStepMapping(stepId: StepId): Promise<void>;
-  /** Flip a completed step to `compensating` while its rollback handler runs (gap 09). */
+  /** Flip a completed step to `compensating` while its rollback handler runs. */
   markStepCompensating(stepId: StepId): Promise<void>;
   /** Flip a step to `compensated`; optionally record a compensation error for surfacing. */
   markStepCompensated(stepId: StepId, error?: string): Promise<void>;
 
-  /** Insert map child step rows at runtime (gap 06) and return them with ids. */
+  /** Insert map child step rows at runtime and return them with ids. */
   addChildSteps(workflowId: WorkflowId, parentStepId: StepId, children: AddChildStep[]): Promise<StepRecord[]>;
   /** List the child steps of a map parent, ordered by creation (item order). */
   listChildSteps(parentStepId: StepId): Promise<StepRecord[]>;

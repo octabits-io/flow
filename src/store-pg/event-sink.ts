@@ -4,7 +4,7 @@ import { createSchemaDdl } from './ddl';
 import { type SqlExecutor, poolExecutor, toExecutor } from './executor';
 
 /**
- * DDL for the append-only run-history table (gap 10). Apply once at deploy time (alongside
+ * DDL for the append-only run-history table. Apply once at deploy time (alongside
  * `flowStoreDdl`), or call `applySchema(pool, flowEventDdl())`.
  */
 export function flowEventDdl(schema = 'public'): string {
@@ -50,7 +50,7 @@ export interface EventSinkDeps {
 }
 
 /**
- * A `FlowObserver` that appends every engine event to `flow_step_event` (gap 10). `record` is
+ * A `FlowObserver` that appends every engine event to `flow_step_event`. `record` is
  * fire-and-forget (it never throws and never blocks the engine); call `flush()` to await the
  * in-flight inserts — useful in tests and before shutdown.
  */
@@ -118,7 +118,7 @@ export function createPgEventSink(deps: PgEventSinkDeps): PgEventSink {
 }
 
 /**
- * Read a workflow's run history (gap 10), ordered oldest-first. Accepts either a
+ * Read a workflow's run history, ordered oldest-first. Accepts either a
  * `pg` {@link Pool} (batteries-included) or a host's {@link SqlExecutor} (e.g.
  * RLS-scoped) — both route through the same seam.
  */

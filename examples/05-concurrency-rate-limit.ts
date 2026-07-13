@@ -1,5 +1,5 @@
 /**
- * 05 — Concurrency & rate limiting (gap 03)
+ * 05 — Concurrency & rate limiting
  *
  * A `StepGate` is consulted before each step runs. It can cap how many steps of a given *type*
  * run at once (concurrency) and/or throttle them (token-bucket rate limit). A step that isn't

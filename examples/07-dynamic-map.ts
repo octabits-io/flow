@@ -1,5 +1,5 @@
 /**
- * 07 — Dynamic fan-out / map (gap 06)
+ * 07 — Dynamic fan-out / map
  *
  * `defineMapStep` fans out over a list whose size is only known at run time. `items(ctx)`
  * produces the list (from deps/input); the engine spawns one child step per item, each running

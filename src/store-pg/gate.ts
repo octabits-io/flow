@@ -4,7 +4,7 @@ import { createSchemaDdl } from './ddl';
 import { type SqlExecutor, poolExecutor } from './executor';
 
 // ============================================================================
-// Postgres StepGate adapter (shared, multi-worker — gap 03)
+// Postgres StepGate adapter (shared, multi-worker)
 // ============================================================================
 //
 // A shared-store implementation of the core `StepGate`, so concurrency caps and
