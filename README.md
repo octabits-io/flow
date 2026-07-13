@@ -430,7 +430,7 @@ const engine = createWorkflowEngine({ store, dispatcher, registry, partitionKey,
 - **`FlowObserver`** receives a `FlowEvent` at every transition — `workflow.started/completed/
   failed/cancelled` and `step.started/completed/failed/retrying/skipped/waiting/resumed/mapping/
   compensating/compensated`, each with `{ workflowId, stepKey, stepType, attempt, durationMs,
-  error, partition, at }`. One surface powers **run history** (persist the events) and **metrics**
+  error, partitionKey, at }`. One surface powers **run history** (persist the events) and **metrics**
   (feed OTel counters/histograms).
 - **`FlowTracer`** wraps each step execution in a `flow.step` span (records the error on failure).
   An OpenTelemetry adapter is a ~10-line `startSpan` shim.
@@ -568,6 +568,7 @@ Condensed list of public exports per subpath.
 
 **`@octabits-io/flow/store-pg`**
 - `createPgWorkflowStore`, `applySchema`, `flowStoreDdl`, `FLOW_STORE_DDL`
+- `createWorkflowStore`, `SqlExecutor`, `poolExecutor`, `toExecutor` — inject your own executor (e.g. RLS-scoped) instead of a raw `Pool`
 - `createPgStepGate`, `flowGateDdl`, `FLOW_GATE_DDL`
 - `createPgEventSink`, `readFlowEvents`, `flowEventDdl`, `FLOW_EVENT_DDL`
 
@@ -591,7 +592,8 @@ Condensed list of public exports per subpath.
 ```bash
 pnpm --filter @octabits-io/flow test:unit         # fast, no Docker (in-memory)
 pnpm --filter @octabits-io/flow test:integration  # Postgres + pg-boss via testcontainers
-pnpm --filter @octabits-io/flow lint              # dependency-boundary check + typecheck
+pnpm --filter @octabits-io/flow lint              # dependency-boundary check (scripts/check-boundaries.mjs)
+pnpm --filter @octabits-io/flow typecheck         # tsc --noEmit
 ```
 
 Write your own workflows against `createInMemoryWorkflowStore()` + an in-process dispatcher (see
