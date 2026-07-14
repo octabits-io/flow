@@ -26,7 +26,9 @@
       "default": "./dist/dispatcher-pgboss/index.js"
     }
   },
+  "packageManager": "pnpm@10.5.2",
   "scripts": {
+    "prepare": "simple-git-hooks",
     "build": "tsdown",
     "clean": "rm -rf dist",
     "test": "vitest run",
@@ -34,7 +36,14 @@
     "test:integration": "vitest run --project integration",
     "lint": "node scripts/check-boundaries.mjs",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "tsdown"
+    "prepublishOnly": "tsdown",
+    "changeset": "changeset",
+    "changeset:version": "GITHUB_TOKEN=$(passage show github/token) changeset version",
+    "changeset:publish": "pnpm build && echo \"//registry.npmjs.org/:_authToken=$(passage show npm/token/octabits)\" > .npmrc && { changeset publish; s=$?; rm -f .npmrc; exit $s; }",
+    "release": "bash scripts/release.sh"
+  },
+  "simple-git-hooks": {
+    "commit-msg": "pnpm commitlint --edit $1"
   },
   "files": [
     "dist",
@@ -46,12 +55,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/octabits-io/platform.git",
-    "directory": "packages/flow"
+    "url": "https://github.com/octabits-io/flow.git"
   },
-  "homepage": "https://github.com/octabits-io/platform/tree/main/packages/flow",
+  "homepage": "https://github.com/octabits-io/flow",
   "bugs": {
-    "url": "https://github.com/octabits-io/platform/issues"
+    "url": "https://github.com/octabits-io/flow/issues"
   },
   "keywords": [
     "workflow",
@@ -88,13 +96,21 @@
   },
   "devDependencies": {
     "@ai-sdk/provider": "^4.0.3",
+    "@changesets/changelog-github": "^0.7.0",
+    "@changesets/cli": "^2.31.0",
+    "@commitlint/cli": "^21.2.1",
+    "@commitlint/config-conventional": "^21.2.0",
     "@testcontainers/postgresql": "^12.0.4",
     "@types/node": "^26.1.1",
     "@types/pg": "^8.20.0",
     "ai": "^7.0.22",
     "pg": "^8.22.0",
     "pg-boss": "^12.26.0",
+    "simple-git-hooks": "^2.13.1",
     "testcontainers": "^12.0.4",
-    "vitest": "^4.1.10"
+    "tsdown": "^0.22.5",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "zod": "^4.4.3"
   }
 }

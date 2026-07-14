@@ -590,10 +590,10 @@ Condensed list of public exports per subpath.
 ## Testing
 
 ```bash
-pnpm --filter @octabits-io/flow test:unit         # fast, no Docker (in-memory)
-pnpm --filter @octabits-io/flow test:integration  # Postgres + pg-boss via testcontainers
-pnpm --filter @octabits-io/flow lint              # dependency-boundary check (scripts/check-boundaries.mjs)
-pnpm --filter @octabits-io/flow typecheck         # tsc --noEmit
+pnpm test:unit         # fast, no Docker (in-memory)
+pnpm test:integration  # Postgres + pg-boss via testcontainers
+pnpm lint              # dependency-boundary check (scripts/check-boundaries.mjs)
+pnpm typecheck         # tsc --noEmit
 ```
 
 Write your own workflows against `createInMemoryWorkflowStore()` + an in-process dispatcher (see
@@ -604,5 +604,6 @@ Write your own workflows against `createInMemoryWorkflowStore()` + an in-process
 
 ## Status
 
-Pre-1.0 — published as part of the [octabits platform monorepo](https://github.com/octabits-io/platform).
+Pre-1.0 — developed in [octabits-io/flow](https://github.com/octabits-io/flow) (extracted from the
+[octabits platform monorepo](https://github.com/octabits-io/platform), where its earlier history lives).
 The API is stable but may still see breaking changes in 0.x minors.

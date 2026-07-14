@@ -1,4 +1,12 @@
-dist
-node_modules
+node_modules/
+dist/
 *.tsbuildinfo
-.turbo
+.DS_Store
+bun.lock
+CLAUDE.md
+.claude/
+.env*
+
+# local npm auth via direnv + passage
+.envrc
+.npmrc

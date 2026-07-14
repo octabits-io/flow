@@ -6,10 +6,10 @@ self-contained with a `main()` and prints what it does.
 ## Running
 
 These are TypeScript files that import `@octabits-io/flow`. From a project that has the package
-installed (or from this monorepo after `pnpm build`):
+installed (or from this repo after `pnpm build`):
 
 ```bash
-# with a TS runner that resolves the workspace package
+# with a TS runner that resolves the package
 bunx tsx examples/01-in-memory-quickstart.ts
 # or
 bun examples/01-in-memory-quickstart.ts
