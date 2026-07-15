@@ -15,3 +15,4 @@ export * from './retry';
 export * from './defineStep';
 export * from './engine';
 export * from './in-memory-store';
+export * from './public-view';
