@@ -1,5 +1,11 @@
 # @octabits-io/flow
 
+## 0.12.0
+
+### Minor Changes
+
+- [`914b82f`](https://github.com/octabits-io/flow/commit/914b82f58ff66a19514dea95a2687cc13350ee77) - Add the public wire view to core: `toPublicWorkflow`/`toPublicStep` project engine records for HTTP consumers (dropping `partitionKey`, `idempotencyKey`, sub-workflow linkage, `metadata`, and `attempts`), `STEP_DISPLAY_STATUS`/`toDisplayStepStatus` fold engine step statuses to the five display states (suspensions → `running`, `compensated` → `skipped`), and `PUBLIC_WORKFLOW_SCHEMA`/`PUBLIC_WORKFLOW_STEP_SCHEMA`/`WORKFLOW_STATUS_SCHEMA`/`STEP_DISPLAY_STATUS_SCHEMA` ship the same shapes as Zod schemas for route `response` declarations. Extend with consumer fields via `PUBLIC_WORKFLOW_SCHEMA.extend({...})` + spread.
+
 ## 0.11.2
 
 ### Patch Changes
