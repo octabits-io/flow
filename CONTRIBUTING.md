@@ -5,6 +5,9 @@ useful thing you can send; PRs are welcome too.
 
 ## Getting set up
 
+**Node >= 22** and pnpm (the version comes from `packageManager`, so `corepack enable`
+is enough).
+
 ```bash
 pnpm install
 pnpm build
@@ -12,6 +15,9 @@ pnpm build
 
 **Docker must be running** for the integration suite — the Postgres and pg-boss
 tests spin up real containers via Testcontainers.
+
+CI runs the fast lane on Node 22, 24, and 26; if you use a newer runtime locally, keep
+22 working — it is the floor declared in `engines`.
 
 ## The checks
 
