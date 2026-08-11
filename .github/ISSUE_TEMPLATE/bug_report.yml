@@ -1,0 +1,60 @@
+name: Bug report
+description: Something in the engine, a store, a dispatcher, or the AI add-on behaves incorrectly.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you expected, and what you got instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: >
+        A workflow definition that shows the problem, ideally against
+        `createInMemoryWorkflowStore()` — see `examples/` for the shape. If it
+        only reproduces on Postgres/pg-boss, say so.
+      render: ts
+    validations:
+      required: true
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer?
+      options:
+        - core (engine, DAG, retry, signals, map, saga)
+        - store-pg (Postgres store / gate / event sink)
+        - dispatcher-pgboss (queue, workers, cron)
+        - ai (instrumented models, quota, usage)
+        - not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: "@octabits-io/flow version"
+      placeholder: 0.12.0
+    validations:
+      required: true
+
+  - type: input
+    id: env
+    attributes:
+      label: Node / Postgres versions
+      placeholder: Node 22.11, Postgres 17
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or stack trace
+      render: shell
+    validations:
+      required: false

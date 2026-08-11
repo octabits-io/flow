@@ -1,5 +1,10 @@
 # @octabits-io/flow
 
+[![CI](https://github.com/octabits-io/flow/actions/workflows/ci.yml/badge.svg)](https://github.com/octabits-io/flow/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/@octabits-io/flow.svg)](https://www.npmjs.com/package/@octabits-io/flow)
+[![license](https://img.shields.io/npm/l/@octabits-io/flow.svg)](./LICENSE)
+[![types](https://img.shields.io/badge/types-included-blue.svg)](https://www.npmjs.com/package/@octabits-io/flow)
+
 A durable **DAG workflow engine** for TypeScript — Zod-typed steps, self-advancing
 execution over Postgres + a pluggable queue, with an optional AI add-on (transparent
 token/cost instrumentation + quota). One package, four layers, zero heavy deps in the core.
@@ -632,6 +637,14 @@ pnpm typecheck         # tsc --noEmit
 Write your own workflows against `createInMemoryWorkflowStore()` + an in-process dispatcher (see
 [`examples/runtime.ts`](./examples/runtime.ts)) for fast, deterministic unit tests; use
 `createRecordingObserver()` to assert the lifecycle.
+
+---
+
+## Contributing
+
+Bug reports with a runnable reproduction are the most useful thing you can send; PRs are
+welcome. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the setup, the layer rules the lint
+enforces, and the correctness requirements a custom `WorkflowStore` has to meet.
 
 ---
 

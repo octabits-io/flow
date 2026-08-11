@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a capability, an API change, or a new adapter.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem are you solving?
+      description: The use case, not the proposed API. What are you trying to build?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: >
+        A sketch of the API if you have one. Flow is deliberately declarative — a
+        static, inspectable DAG — so proposals that need arbitrary runtime control
+        flow may not fit; say so if you have thought about that tradeoff.
+      render: ts
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What did you try instead?
+      description: Existing features you worked around, or how you solve this today.
+    validations:
+      required: false
