@@ -369,7 +369,16 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
 
     const startMs = now().getTime();
     try {
-      await store.markStepRunning(stepId, nowIso());
+      // Atomic claim. The `pending` read above is only a cheap pre-filter — this is
+      // the authoritative check, because an at-least-once dispatcher may hand the
+      // same job to two workers concurrently and both would pass the read. The
+      // loser bails here (releasing its gate slot via the outer `finally`) instead
+      // of running the handler a second time.
+      const claimed = await store.markStepRunning(stepId, nowIso());
+      if (!claimed) {
+        logger.info('Lost the step claim to a concurrent worker', { workflowId, stepId, stepKey: step.key });
+        return { ok: true, value: undefined };
+      }
 
       // Resolve dependency outputs
       const dependencyOutputs: Record<string, unknown> = {};

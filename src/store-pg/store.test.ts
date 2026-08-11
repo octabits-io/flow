@@ -154,6 +154,33 @@ describe('createPgWorkflowStore (integration)', () => {
     expect(status.value.status).toBe('failed');
   });
 
+  it('claims a step atomically: exactly one of two concurrent markStepRunning calls wins', async () => {
+    const input = z.object({});
+    const a = defineStep<{}, { v: number }, Ctx>({ type: 'pgclaim:a', workflowInputSchema: input, outputSchema: z.object({ v: z.number() }), handler: async () => ({ v: 1 }) });
+    const wf = buildWorkflow<{}, Ctx>({ type: 'pg-claim', inputSchema: input, steps: { a } });
+
+    const h = harness();
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+    const job = h.queue.shift()!;
+
+    // Two workers race for the same row. Under READ COMMITTED the loser blocks on
+    // the winner's row lock, then re-evaluates its WHERE against the committed
+    // row — which is no longer `pending` — and matches nothing.
+    const at = new Date().toISOString();
+    const claims = await Promise.all([
+      h.store.markStepRunning(job.stepId, at),
+      h.store.markStepRunning(job.stepId, at),
+    ]);
+    expect(claims.filter(Boolean).length).toBe(1);
+
+    // the loser must not have double-incremented the attempt counter
+    const step = await h.store.getStep(job.stepId);
+    expect(step?.status).toBe('running');
+    expect(step?.attempts).toBe(1);
+  });
+
   it('lists workflows with their steps and filters by type', async () => {
     const list = await createPgWorkflowStore({ pool, partitionKey: 'test' }).listWorkflows({ type: 'pg-linear', limit: 10 });
     expect(list.length).toBeGreaterThan(0);

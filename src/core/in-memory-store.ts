@@ -104,13 +104,15 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
     return stepsOf(workflowId).map(clone);
   }
 
-  async function markStepRunning(stepId: StepId, startedAt: string): Promise<void> {
+  async function markStepRunning(stepId: StepId, startedAt: string): Promise<boolean> {
     const s = steps.get(stepId);
-    if (s) {
-      s.status = 'running';
-      s.startedAt = startedAt;
-      s.attempts += 1;
-    }
+    // Atomic by construction: single-threaded, and there is no await between the
+    // status check and the write.
+    if (!s || s.status !== 'pending') return false;
+    s.status = 'running';
+    s.startedAt = startedAt;
+    s.attempts += 1;
+    return true;
   }
 
   async function markStepPending(stepId: StepId): Promise<void> {

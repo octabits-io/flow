@@ -227,11 +227,14 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
     return res.rows.map(mapStep);
   }
 
-  async function markStepRunning(stepId: StepId, startedAt: string): Promise<void> {
-    await exec.query(
-      `UPDATE ${STEP} SET status = 'running', started_at = $2, attempts = attempts + 1 WHERE id = $1 AND partition_key = $3`,
+  async function markStepRunning(stepId: StepId, startedAt: string): Promise<boolean> {
+    // `AND status = 'pending'` makes the claim atomic: exactly one of two workers
+    // handed the same job can match a row, so the handler never runs twice.
+    const res = await exec.query(
+      `UPDATE ${STEP} SET status = 'running', started_at = $2, attempts = attempts + 1 WHERE id = $1 AND partition_key = $3 AND status = 'pending'`,
       [stepId, startedAt, partitionKey],
     );
+    return (res.rowCount ?? 0) > 0;
   }
 
   async function markStepPending(stepId: StepId): Promise<void> {

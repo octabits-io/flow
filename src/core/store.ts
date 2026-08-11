@@ -102,8 +102,18 @@ export interface WorkflowStore {
   getStep(stepId: StepId): Promise<StepRecord | null>;
   listSteps(workflowId: WorkflowId): Promise<StepRecord[]>;
 
-  /** Flip a pending step to `running`, set `startedAt`, and increment `attempts`. */
-  markStepRunning(stepId: StepId, startedAt: string): Promise<void>;
+  /**
+   * **Atomically claim** a step: flip it to `running`, set `startedAt` and increment
+   * `attempts` — but **only if it is still `pending`**. Returns `true` if this caller
+   * won the claim, `false` if the step had already left `pending` (another worker
+   * claimed it, or it was cancelled/skipped meanwhile).
+   *
+   * Implementations MUST make the status check and the write a single atomic
+   * operation (e.g. `UPDATE … WHERE id = $1 AND status = 'pending'` and report
+   * whether a row matched). A read-then-write would let two workers handed the
+   * same job by an at-least-once dispatcher both run the handler.
+   */
+  markStepRunning(stepId: StepId, startedAt: string): Promise<boolean>;
   /** Reset a step to `pending` for a scheduled retry (leaves `attempts` as-is). */
   markStepPending(stepId: StepId): Promise<void>;
   /** Flip a ready step to `waiting` — it suspends until `resumeStep` (waitForEvent). */

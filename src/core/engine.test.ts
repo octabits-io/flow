@@ -412,6 +412,48 @@ describe('createWorkflowEngine', () => {
     expect(order.length).toBe(before);
   });
 
+  it('runs the handler once when the same job is delivered to two workers concurrently', async () => {
+    const h = harness();
+    let runs = 0;
+    const input = z.object({});
+    const once = defineStep<{}, { n: number }, Ctx>({
+      type: 'claim:once',
+      workflowInputSchema: input,
+      outputSchema: z.object({ n: z.number() }),
+      handler: async () => {
+        runs++;
+        // Yield the event loop so the two deliveries genuinely overlap: without
+        // an atomic claim, both would have read the step as `pending` by now.
+        await new Promise((r) => setTimeout(r, 5));
+        return { n: runs };
+      },
+    });
+    const wf = buildWorkflow<{}, Ctx>({ type: 'claim', inputSchema: input, steps: { once } });
+    wf.register(h.registry);
+
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+    const job = h.queue.shift()!;
+
+    // two workers handed the same job by an at-least-once dispatcher
+    const [a, b] = await Promise.all([
+      h.engine.executeStep(job.workflowId, job.stepId),
+      h.engine.executeStep(job.workflowId, job.stepId),
+    ]);
+    expect(a.ok).toBe(true);
+    expect(b.ok).toBe(true);
+    expect(runs).toBe(1);
+
+    await h.drain();
+    const status = await h.engine.getWorkflowStatus(started.value.workflowId);
+    if (!status.ok) return;
+    expect(status.value.status).toBe('completed');
+    // the loser must not have burned an attempt or double-counted the step
+    expect(status.value.completedSteps).toBe(1);
+    const steps = await h.store.listSteps(started.value.workflowId);
+    expect(steps[0]?.attempts).toBe(1);
+  });
+
   it('handleStepExhausted marks the step failed and cascades the workflow', async () => {
     const order: string[] = [];
     const h = harness();
