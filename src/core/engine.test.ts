@@ -673,6 +673,70 @@ describe('per-step retry policy', () => {
     expect(calls.n).toBe(1);
   });
 
+  it('defaultRetryable: false stops the classifier guessing, without silencing explicit decisions', async () => {
+    const calls = { guessed: 0, marked: 0 };
+    const empty2 = z.object({});
+
+    // A failure the classifier would guess is transient (message says "timeout").
+    const guessed = defineStep<Record<string, never>, { ok: boolean }, Ctx>({
+      type: 'strict:guessed',
+      workflowInputSchema: empty2,
+      outputSchema: okOut,
+      retry: { maxAttempts: 4, backoff: 'fixed', initialDelayMs: 1 },
+      handler: async () => {
+        calls.guessed++;
+        throw new Error('request timeout after 30s');
+      },
+    });
+    // The same failure, but explicitly marked.
+    const marked = defineStep<Record<string, never>, { ok: boolean }, Ctx>({
+      type: 'strict:marked',
+      workflowInputSchema: empty2,
+      outputSchema: okOut,
+      retry: { maxAttempts: 3, backoff: 'fixed', initialDelayMs: 1 },
+      handler: async () => {
+        calls.marked++;
+        if (calls.marked < 3) throw retryableError('encoder busy');
+        return { ok: true };
+      },
+    });
+
+    function strictHarness() {
+      const store = createInMemoryWorkflowStore();
+      const registry = createStepHandlerRegistry<Ctx>();
+      const queue: DispatchStepPayload[] = [];
+      const dispatcher: Dispatcher = { async enqueueStep(p) { queue.push(p); return { ok: true, value: undefined }; } };
+      const engine = createWorkflowEngine<Ctx>({
+        store, registry, dispatcher, partitionKey: 'test',
+        config: { defaultRetryable: false },
+      });
+      return { registry, engine, queue, async drain() {
+        let g = 0;
+        while (queue.length) {
+          if (++g > 500) throw new Error('runaway');
+          const p = queue.shift()!;
+          try { await engine.executeStep(p.workflowId, p.stepId); } catch { /* DLQ */ }
+        }
+      } };
+    }
+
+    const h1 = strictHarness();
+    const wf1 = buildWorkflow<Record<string, never>, Ctx>({ type: 'strict-a', inputSchema: empty2, steps: { only: guessed } });
+    wf1.register(h1.registry);
+    const s1 = await wf1.start(h1.engine, {});
+    if (!s1.ok) return;
+    await h1.drain();
+    expect(calls.guessed).toBe(1); // the guess was overridden — no retry
+
+    const h2 = strictHarness();
+    const wf2 = buildWorkflow<Record<string, never>, Ctx>({ type: 'strict-b', inputSchema: empty2, steps: { only: marked } });
+    wf2.register(h2.registry);
+    const s2 = await wf2.start(h2.engine, {});
+    if (!s2.ok) return;
+    await h2.drain();
+    expect(calls.marked).toBe(3); // an explicit marker still retries under strict mode
+  });
+
   it('retries a retryable failure with backoff, then succeeds', async () => {
     const calls = { n: 0 };
     const flaky = defineStep<Record<string, never>, { ok: boolean }, Ctx>({

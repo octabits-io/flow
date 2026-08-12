@@ -445,18 +445,32 @@ after that the step fails terminally. → [`examples/03-retry-timeout.ts`](./exa
    throw nonRetryableError('timeout must be > 0');    // never retry — a bug, not a blip
    throw markRetryable(await client.readError(), true); // tag an error you didn't construct
    ```
+   A marker is found **through `cause`**, so wrapping doesn't lose it:
+   `new Error('upstream failed', { cause: retryableError('busy') })` still retries.
 2. **The step's own predicate**, for classifying a whole family of errors at once:
    ```ts
    isRetryable: (e) => e instanceof HttpError && e.status >= 500,
    ```
    (`defineMapStep` takes `itemIsRetryable` for its per-item children.)
-3. **`isRetryableError`** — the zero-config default, which matches the message against a small
-   vocabulary (`rate limit`, `429`, `timeout`, `ECONNRESET`, `fetch failed`, `503`, …).
+3. **`isRetryableError`** — the zero-config default. It reads **structured fields first**:
+   `code` (`ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `EAI_AGAIN`, …) and HTTP status from
+   `status` / `statusCode` / `response.status` (408, 425, 429 and 5xx except 501/505). Only
+   then does it fall back to matching the **message** against a small vocabulary
+   (`rate limit`, `timeout`, `fetch failed`, `service unavailable`, …).
 
-The default is a convenience, not a classifier: it reads the *message*, so `'connection refused'`
-is treated as permanent while a genuine bug whose message happens to say `'timeout'` is retried
-until the budget runs out. When the answer matters, mark the error rather than phrasing it to
-suit the heuristic.
+That last fallback is a convenience, not a classifier — it can only judge wording. A genuine
+bug reading `'timeout must be > 0'` looks transient to it. When the answer matters, mark the
+error rather than phrasing it to suit the heuristic.
+
+To stop guessing entirely, give the engine a `defaultRetryable`:
+
+```ts
+createWorkflowEngine({ …, config: { defaultRetryable: false } }); // strict: never guess
+```
+
+It replaces the classifier's answer **only where the classifier guessed**. Explicitly marked
+errors, steps with their own `isRetryable`, and engine-generated failures like a step timeout
+are unaffected.
 
 ### Durable sleep
 ```ts

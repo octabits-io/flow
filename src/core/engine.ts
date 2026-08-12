@@ -45,7 +45,10 @@ async function runWithTimeout<TContext>(
   const timeout = new Promise<Result<Record<string, unknown>, StepError>>((resolve) => {
     timer = setTimeout(() => {
       abort.abort();
-      resolve({ ok: false, error: { key: 'step_error', message: `Step timed out after ${timeoutMs}ms`, retryable: true } });
+      resolve({
+        ok: false,
+        error: { key: 'step_error', message: `Step timed out after ${timeoutMs}ms`, retryable: true, retryableFrom: 'explicit' },
+      });
     }, timeoutMs);
   });
   try {
@@ -96,6 +99,17 @@ export interface WorkflowEngineConfig {
   stepExpirySeconds?: number;
   /** Extra grace added to the stuck threshold beyond `stepExpirySeconds`. Default 300. */
   stuckStepBufferSeconds?: number;
+  /**
+   * Retryability for failures nothing authoritative classified — i.e. where the
+   * default classifier fell back to guessing from the error's shape and message.
+   * Set `false` for strict mode: never guess, and treat an unmarked failure as
+   * permanent. Explicitly marked errors ({@link markRetryable}) and steps with
+   * their own `isRetryable` are unaffected, as are engine-generated failures like
+   * a step timeout.
+   *
+   * Leave unset to keep the default classifier's answer.
+   */
+  defaultRetryable?: boolean;
 }
 
 export interface WorkflowEngineDeps<TContext = unknown> {
@@ -134,6 +148,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   const now = deps.now ?? (() => new Date());
   const stepExpirySeconds = deps.config?.stepExpirySeconds ?? 600;
   const stuckStepBufferSeconds = deps.config?.stuckStepBufferSeconds ?? 300;
+  const defaultRetryable = deps.config?.defaultRetryable;
 
   const nowIso = () => now().toISOString();
 
@@ -460,7 +475,12 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
         }
 
         // Retry transient failures within the attempt budget (re-enqueue with backoff).
-        if (handlerResult.error.retryable && attemptNo < maxAttempts) {
+        // A configured `defaultRetryable` replaces the classifier's guess, but never a
+        // decision made explicitly (a marked error, a step predicate, an engine timeout).
+        const guessed = handlerResult.error.retryableFrom === 'heuristic';
+        const shouldRetry =
+          guessed && defaultRetryable !== undefined ? defaultRetryable : handlerResult.error.retryable;
+        if (shouldRetry && attemptNo < maxAttempts) {
           const delaySeconds = backoffDelaySeconds(retry, attemptNo);
           logger.info('Retrying step', { workflowId, stepId, stepKey: step.key, attempt: attemptNo, maxAttempts, delaySeconds, reason: handlerResult.error.message });
           emit({ type: 'step.retrying', workflowId, workflowType: workflow.type, stepId, stepKey: step.key, stepType: step.type, attempt: attemptNo, durationMs: now().getTime() - startMs, error: handlerResult.error.message });

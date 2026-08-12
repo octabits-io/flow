@@ -107,6 +107,12 @@ export interface StepError extends FlowErrorShape {
   message: string;
   /** Whether the failure is transient and the step should be retried. */
   retryable?: boolean;
+  /**
+   * How `retryable` was decided. `'heuristic'` means nothing authoritative said
+   * either way and the default classifier guessed from the error's shape/message —
+   * the engine's `defaultRetryable` may override those, and only those.
+   */
+  retryableFrom?: 'explicit' | 'predicate' | 'heuristic';
 }
 
 export type StepHandler<TContext = unknown> = (

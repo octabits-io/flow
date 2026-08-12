@@ -205,11 +205,15 @@ export function defineStep<
       return { ok: true, value: outputResult.data };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown step error';
-      // Precedence: an explicit marker on the error, then this step's predicate,
-      // then the message heuristic.
-      const retryable =
-        explicitRetryability(error) ?? (isRetryable ? isRetryable(error) : isRetryableError(error));
-      return { ok: false, error: { key: 'step_error', message, retryable } };
+      // Precedence: an explicit marker on the error (following `cause`), then this
+      // step's predicate, then the default classifier. `retryableFrom` records which
+      // one answered, so the engine's `defaultRetryable` can override a guess without
+      // overriding a decision someone actually made.
+      const marked = explicitRetryability(error);
+      const retryable = marked ?? (isRetryable ? isRetryable(error) : isRetryableError(error));
+      const retryableFrom =
+        marked !== undefined ? 'explicit' : isRetryable ? 'predicate' : 'heuristic';
+      return { ok: false, error: { key: 'step_error', message, retryable, retryableFrom } };
     }
   };
 
