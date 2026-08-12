@@ -1,5 +1,100 @@
 # @octabits-io/flow
 
+## 0.13.0
+
+### Minor Changes
+
+- [`d342f6a`](https://github.com/octabits-io/flow/commit/d342f6a85f65384fde29295c1a71fe602c397d32) - Fix a double-execution window in the step claim.
+  
+  `executeStep` read a step, checked it was `pending`, and then wrote `running` as a
+  separate statement. Two workers handed the same job by an at-least-once dispatcher
+  could both pass the read and both run the handler — with the step's `attempts`
+  double-incremented.
+  
+  The claim is now atomic: `markStepRunning` flips `pending` → `running` only if the
+  step is still `pending`, and reports whether the caller won. The Postgres store does
+  this with `UPDATE … WHERE id = $1 AND status = 'pending'` and checks `rowCount`; the
+  engine bails out (releasing its gate slot) when it loses the race.
+  
+  **Breaking for custom `WorkflowStore` implementations**: `markStepRunning` now returns
+  `Promise<boolean>` instead of `Promise<void>`, and MUST perform the status check and
+  the write as one atomic operation. Implementations that unconditionally write the row
+  will reintroduce the double-execution window. The bundled Postgres and in-memory
+  stores are already updated; consumers using them need no changes.
+
+- [`0a3aff0`](https://github.com/octabits-io/flow/commit/0a3aff0f47a81405b3259afcacf39ffd986ebbb9) - Make the pg-boss step worker settle jobs individually, and expose the throughput
+  knobs that were previously unreachable.
+  
+  **Per-job settlement.** pg-boss fails an entire batch when the handler throws, so
+  one bad step dragged its batch neighbours into a retry — wasteful (the engine's
+  atomic claim made re-execution a no-op) and it obscured which job actually
+  dead-lettered. The worker now reports each job's own outcome: a step that throws
+  fails alone under the queue's retry policy, and a payload that fails schema
+  validation is dead-lettered directly rather than burning attempts it can never pass.
+  
+  **New `workerOptions`** on `createPgBossStepWorker`, all optional and defaulting to
+  today's behaviour:
+  
+  - `burstWhenBatchFull` — keep fetching with no delay while batches come back full.
+  - `burstWhenReadyExceeds` — burst while the queue's ready count exceeds a threshold.
+  - `notifyPollingIntervalSeconds` — poll interval used while LISTEN/NOTIFY is active.
+  - `concurrency` — steps run at once from one fetched batch (default 1, i.e. serial).
+  
+  Measured on the repo's benchmark (200 workflows × 6 steps, 1 worker, batch 25):
+  50 → 274 steps/sec with `burstWhenBatchFull`, and 646 with `concurrency: 8` on top.
+  `concurrency` alone, without burst, changes nothing — a poll-bound worker drains its
+  batch in milliseconds and then waits, so the wait is the bottleneck, not the work.
+  Budget connections before raising it: each in-flight step holds one, so
+  `workers × concurrency` must fit the pool and Postgres `max_connections`.
+  
+  **Peer range**: the optional `pg-boss` peer moves from `^12.0.0` to `^12.21.0`, the
+  release that introduced `perJobResults` and the burst options.
+
+- [`f032407`](https://github.com/octabits-io/flow/commit/f032407ef3581aabbe9d88a0e7e3b4cca787f656) - Add an explicit escape hatch for retryability.
+  
+  Whether a failed step was retried was decided solely by `isRetryableError`, which
+  matches the error *message* against a small vocabulary (`rate limit`, `429`,
+  `timeout`, `ECONNRESET`, `503`, …). That silently misjudges both directions:
+  `'connection refused'` is transient but failed terminally, while a permanent bug
+  whose message happened to contain `'timeout'` was retried until the budget ran out.
+  
+  Retryability is now decided in this order:
+  
+  1. **An explicit marker on the error** — `retryableError(msg)`, `nonRetryableError(msg)`,
+     or `markRetryable(err, bool)` to tag an error you didn't construct. Also
+     `explicitRetryability(err)` to read the decision back. Markers are found through
+     the `cause` chain, so wrapping an error doesn't lose its decision.
+  2. **The step's own predicate** — `defineStep({ isRetryable: (e) => … })`, and
+     `defineMapStep({ itemIsRetryable })` for per-item children.
+  3. **`isRetryableError`** — now reads structured fields before the message: `code`
+     (`ECONNRESET`, `ECONNREFUSED`, `ETIMEDOUT`, `EAI_AGAIN`, undici timeouts, …) and
+     HTTP status from `status` / `statusCode` / `httpStatusCode` / `response.status`
+     (408, 425, 429, 5xx except 501/505). The message vocabulary is unchanged and is
+     now the last resort.
+  
+  Also adds `defaultRetryable` to the engine config, for hosts that would rather not
+  guess at all:
+  
+  ```ts
+  createWorkflowEngine({ …, config: { defaultRetryable: false } });
+  ```
+  
+  It applies **only where the classifier guessed** — explicit markers, per-step
+  predicates and engine-generated failures (a step timeout) are unaffected. `StepError`
+  gains `retryableFrom: 'explicit' | 'predicate' | 'heuristic'` to make that distinction
+  available to custom dispatchers.
+  
+  The marker is a non-enumerable `Symbol.for` property, so it does not leak into
+  `JSON.stringify` or spread, and survives a duplicated copy of the module. Marking
+  never throws — errors that are frozen, sealed or non-extensible fall back to a
+  `WeakMap`, since marking is usually evaluated inside a `throw` and a `TypeError`
+  there would replace the failure being reported.
+  
+  **Behaviour change**: errors carrying a transient `code` or a 5xx/429 status now
+  retry where previously they failed terminally (their message was never consulted).
+  Steps that mark nothing, define no predicate, and throw plain message-only errors
+  behave exactly as before.
+
 ## 0.12.0
 
 ### Minor Changes
