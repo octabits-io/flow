@@ -80,6 +80,11 @@ signature alone doesn't express — they're documented on the interfaces in
 
 If you add a store, port the behavioural tests in `src/store-pg/store.test.ts`.
 
+## The README demo
+
+`docs/demo.svg` is a real recording of [`scripts/demo.ts`](./scripts/demo.ts), not a mockup.
+If you change the demo, re-record it — the commands are in that file's header comment.
+
 ## Commits
 
 **Conventional Commits**, enforced by a `commit-msg` hook (commitlint):

@@ -52,8 +52,29 @@ of what it did. Both models are durable — they trade off differently, and
 
 ---
 
+## Watch it run
+
+A fuller pipeline than the snippet above — dynamic fan-out over two `map` steps at once, a
+concurrency cap so only 2 of 6 images encode at a time, a flaky step retried, a sub-workflow,
+a step suspended on an external event, and a durable sleep. Then a second workflow fails and
+its completed steps roll back in reverse.
+
+<p align="center">
+  <img src="./docs/demo.svg" alt="Terminal trace of a publishing pipeline: parallel fan-out over locales and images with a concurrency cap, a retried step, a sub-workflow, a suspend-and-resume on an external event, a durable sleep, then a saga rollback in reverse order" width="760">
+</p>
+
+Every line is an engine transition emitted through the [`FlowObserver`](#observability) seam —
+the same one you'd point at OpenTelemetry or an events table — not a `console.log` in a handler.
+
+```bash
+npx tsx scripts/demo.ts    # reproduce it
+```
+
+---
+
 ## Contents
 
+- [Watch it run](#watch-it-run)
 - [How it compares](#how-it-compares)
 - [When not to use Flow](#when-not-to-use-flow)
 - [Features](#features)
