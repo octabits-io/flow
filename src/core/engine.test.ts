@@ -4,6 +4,7 @@ import { createWorkflowEngine } from './engine';
 import { createInMemoryWorkflowStore } from './in-memory-store';
 import { createStepHandlerRegistry } from './registry';
 import { defineStep, buildWorkflow, defineSleepStep, defineWaitStep, defineMapStep, defineSubWorkflowStep } from './defineStep';
+import { retryableError, nonRetryableError } from './retry';
 import type { Dispatcher, DispatchStepPayload } from './dispatcher';
 import type { StepGate } from './gate';
 import type { WorkflowHooks } from './hooks';
@@ -571,6 +572,106 @@ describe('per-step retry policy', () => {
       steps: { only: step },
     });
   }
+
+  it('retries an explicitly-marked error the message heuristic would reject', async () => {
+    const calls = { n: 0 };
+    const step = defineStep<Record<string, never>, { ok: boolean }, Ctx>({
+      type: 'marked:retry',
+      workflowInputSchema: empty,
+      outputSchema: okOut,
+      retry: { maxAttempts: 3, backoff: 'fixed', initialDelayMs: 1 },
+      handler: async () => {
+        calls.n++;
+        // "encoder busy" is not in the heuristic's vocabulary — the marker decides.
+        if (calls.n < 3) throw retryableError('encoder busy');
+        return { ok: true };
+      },
+    });
+    const h = harness();
+    const wf = singleStepWorkflow(step);
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+    await h.drain();
+    expect(calls.n).toBe(3);
+    const status = await h.engine.getWorkflowStatus(started.value.workflowId);
+    if (!status.ok) return;
+    expect(status.value.status).toBe('completed');
+  });
+
+  it('does not retry an explicitly non-retryable error the heuristic would accept', async () => {
+    const calls = { n: 0 };
+    const step = defineStep<Record<string, never>, { ok: boolean }, Ctx>({
+      type: 'marked:permanent',
+      workflowInputSchema: empty,
+      outputSchema: okOut,
+      retry: { maxAttempts: 5, backoff: 'fixed', initialDelayMs: 1 },
+      handler: async () => {
+        calls.n++;
+        // contains "timeout", so the heuristic alone would retry this forever
+        throw nonRetryableError('bug: timeout must be positive');
+      },
+    });
+    const h = harness();
+    const wf = singleStepWorkflow(step);
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+    await h.drain();
+    expect(calls.n).toBe(1);
+    const status = await h.engine.getWorkflowStatus(started.value.workflowId);
+    if (!status.ok) return;
+    expect(status.value.status).toBe('failed');
+  });
+
+  it("uses the step's isRetryable predicate instead of the heuristic", async () => {
+    const calls = { n: 0 };
+    const step = defineStep<Record<string, never>, { ok: boolean }, Ctx>({
+      type: 'predicate:retry',
+      workflowInputSchema: empty,
+      outputSchema: okOut,
+      retry: { maxAttempts: 3, backoff: 'fixed', initialDelayMs: 1 },
+      isRetryable: (e) => (e as { status?: number }).status === 503,
+      handler: async () => {
+        calls.n++;
+        if (calls.n < 2) throw Object.assign(new Error('upstream said no'), { status: 503 });
+        throw Object.assign(new Error('upstream said no'), { status: 400 });
+      },
+    });
+    const h = harness();
+    const wf = singleStepWorkflow(step);
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+    await h.drain();
+    // attempt 1 retried (503), attempt 2 terminal (400) — the predicate decided both
+    expect(calls.n).toBe(2);
+    const status = await h.engine.getWorkflowStatus(started.value.workflowId);
+    if (!status.ok) return;
+    expect(status.value.status).toBe('failed');
+  });
+
+  it('an explicit marker outranks the step predicate', async () => {
+    const calls = { n: 0 };
+    const step = defineStep<Record<string, never>, { ok: boolean }, Ctx>({
+      type: 'precedence',
+      workflowInputSchema: empty,
+      outputSchema: okOut,
+      retry: { maxAttempts: 4, backoff: 'fixed', initialDelayMs: 1 },
+      isRetryable: () => true, // predicate says "always retry"…
+      handler: async () => {
+        calls.n++;
+        throw nonRetryableError('give up'); // …the marker says otherwise, and wins
+      },
+    });
+    const h = harness();
+    const wf = singleStepWorkflow(step);
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+    await h.drain();
+    expect(calls.n).toBe(1);
+  });
 
   it('retries a retryable failure with backoff, then succeeds', async () => {
     const calls = { n: 0 };

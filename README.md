@@ -435,6 +435,29 @@ const flaky = defineStep({
 A failure is retried (with backoff via the dispatcher's `startAfterSeconds`) up to `maxAttempts`;
 after that the step fails terminally. → [`examples/03-retry-timeout.ts`](./examples/03-retry-timeout.ts)
 
+**Which failures count as retryable** is decided in this order:
+
+1. **An explicit marker on the error** — always wins.
+   ```ts
+   import { retryableError, nonRetryableError, markRetryable } from '@octabits-io/flow';
+
+   throw retryableError('encoder busy');              // retry, whatever the message says
+   throw nonRetryableError('timeout must be > 0');    // never retry — a bug, not a blip
+   throw markRetryable(await client.readError(), true); // tag an error you didn't construct
+   ```
+2. **The step's own predicate**, for classifying a whole family of errors at once:
+   ```ts
+   isRetryable: (e) => e instanceof HttpError && e.status >= 500,
+   ```
+   (`defineMapStep` takes `itemIsRetryable` for its per-item children.)
+3. **`isRetryableError`** — the zero-config default, which matches the message against a small
+   vocabulary (`rate limit`, `429`, `timeout`, `ECONNRESET`, `fetch failed`, `503`, …).
+
+The default is a convenience, not a classifier: it reads the *message*, so `'connection refused'`
+is treated as permanent while a genuine bug whose message happens to say `'timeout'` is retried
+until the budget runs out. When the answer matters, mark the error rather than phrasing it to
+suit the heuristic.
+
 ### Durable sleep
 ```ts
 const cooldown = defineSleepStep({ type: 'cooldown', sleepMs: 60 * 60 * 1000, dependencies: { charge } });

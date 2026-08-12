@@ -13,7 +13,7 @@ import type {
   WorkflowCreatedResult,
   FlowError,
 } from './types';
-import { isRetryableError } from './retry';
+import { isRetryableError, explicitRetryability } from './retry';
 
 /**
  * `z.object({})` typed as the empty-record schema. Zod infers `{}` for an empty object schema,
@@ -106,6 +106,16 @@ interface DefineStepConfig<
   handler: (ctx: TypedStepContext<TInput, TDeps, TContext>) => Promise<TOutput>;
   /** Optional retry policy (max attempts, backoff). */
   retry?: RetryPolicy;
+  /**
+   * Decide whether a thrown error is transient, replacing the default message
+   * heuristic ({@link isRetryableError}) for this step. An error carrying an
+   * explicit marker ({@link markRetryable}) still wins over this.
+   *
+   * ```ts
+   * isRetryable: (e) => e instanceof HttpError && e.status >= 500,
+   * ```
+   */
+  isRetryable?: (error: unknown) => boolean;
   /** Optional per-step wall-clock timeout in ms. */
   timeoutMs?: number;
   /** Optional durable start delay in ms — held in the queue once the step is ready. */
@@ -138,7 +148,7 @@ export function defineStep<
   TContext = unknown,
   TDeps extends Record<string, TypedStep<any, any, any, TContext>> = {},
 >(config: DefineStepConfig<TInput, TOutput, TDeps, TContext>): TypedStep<TInput, TOutput, TDeps, TContext> {
-  const { type, workflowInputSchema, outputSchema, dependencies, handler, retry, timeoutMs, delayMs, waitForEvent } = config;
+  const { type, workflowInputSchema, outputSchema, dependencies, handler, retry, isRetryable, timeoutMs, delayMs, waitForEvent } = config;
   const deps = (dependencies ?? {}) as TDeps;
 
   const wrappedHandler: StepHandler<TContext> = async (
@@ -195,7 +205,11 @@ export function defineStep<
       return { ok: true, value: outputResult.data };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown step error';
-      return { ok: false, error: { key: 'step_error', message, retryable: isRetryableError(error) } };
+      // Precedence: an explicit marker on the error, then this step's predicate,
+      // then the message heuristic.
+      const retryable =
+        explicitRetryability(error) ?? (isRetryable ? isRetryable(error) : isRetryableError(error));
+      return { ok: false, error: { key: 'step_error', message, retryable } };
     }
   };
 
@@ -289,6 +303,8 @@ export function defineMapStep<
   ) => Promise<TItemOutput> | TItemOutput;
   /** Optional per-item retry policy. */
   itemRetry?: RetryPolicy;
+  /** Per-item retryability predicate — see `defineStep`'s `isRetryable`. */
+  itemIsRetryable?: (error: unknown) => boolean;
   /** Optional per-item wall-clock timeout in ms. */
   itemTimeoutMs?: number;
 }): TypedStep<TWorkflowInput, { items: TItemOutput[] }, TDeps, TContext> {
@@ -310,6 +326,7 @@ export function defineMapStep<
     workflowInputSchema: emptyObjectSchema,
     outputSchema: config.itemOutputSchema,
     retry: config.itemRetry,
+    isRetryable: config.itemIsRetryable,
     timeoutMs: config.itemTimeoutMs,
     handler: async (ctx) =>
       config.each(ctx.stepInput.item as TItem, {

@@ -38,6 +38,7 @@ import {
   defineSleepStep,
   defineSubWorkflowStep,
   buildWorkflow,
+  retryableError,
 } from '@octabits-io/flow';
 import type { Dispatcher, DispatchStepPayload, FlowEvent, FlowObserver } from '@octabits-io/flow';
 
@@ -234,9 +235,9 @@ async function actOne() {
       const n = (seen.get(i) ?? 0) + 1;
       seen.set(i, n);
       await sleep(900);
-      // `isRetryableError` decides from the message — "timeout" is in its vocabulary,
-      // so this attempt is retried rather than failing the whole map.
-      if (i === 3 && n === 1) throw new Error('encoder timeout');
+      // Marked explicitly: "encoder busy" is not in the default heuristic's vocabulary,
+      // so without the marker this would fail terminally and take the whole map with it.
+      if (i === 3 && n === 1) throw retryableError('encoder busy');
       return { bytes: 1000 + i };
     },
   });
