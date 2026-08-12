@@ -5,27 +5,57 @@
 [![license](https://img.shields.io/npm/l/@octabits-io/flow.svg)](./LICENSE)
 [![types](https://img.shields.io/badge/types-included-blue.svg)](https://www.npmjs.com/package/@octabits-io/flow)
 
-A durable **DAG workflow engine** for TypeScript — Zod-typed steps, self-advancing
-execution over Postgres + a pluggable queue, with an optional AI add-on (transparent
-token/cost instrumentation + quota). One package, four layers, zero heavy deps in the core.
+**Durable workflows for TypeScript that run on the Postgres you already have.**
+
+Declare a DAG of Zod-typed steps. The engine runs each step as soon as its dependencies
+complete, persists every transition, retries failures, and resumes after a crash. There is
+no workflow server to operate, no control plane, and no vendor — it's a library you import,
+not a platform you adopt.
 
 ```ts
 const wf = buildWorkflow({
   type: 'publish-article',
   inputSchema: z.object({ draftId: z.string() }),
-  steps: { fetch, summarize, translate, publish }, // a typed DAG — deps run in parallel
+  steps: { fetchDraft, summarize, translate, publish },
 });
 ```
 
-You declare a graph of steps and their dependencies; the engine runs each step as soon as
-its dependencies complete, persists every transition, retries failures, and resumes after a
-crash. It is **declarative** (a static DAG you can inspect) — not the imperative
-durable-function model of Temporal/DBOS/Inngest.
+`summarize` and `translate` both depend on `fetchDraft`, and `publish` waits for both — so the
+engine runs the middle pair **concurrently** and fans back in, without you scheduling anything:
+
+```
+              ┌── summarize ──┐
+ fetchDraft ──┤               ├── publish
+              └── translate ──┘
+```
+
+That shape isn't inferred from a trace — it *is* the workflow. The DAG is a plain value you can
+walk before anything runs:
+
+```ts
+for (const s of wf.definition.steps) {
+  console.log(`${s.key.padEnd(12)} type=${s.type.padEnd(10)} deps: ${s.dependencies?.join(', ') || '—'}`);
+}
+```
+
+```text
+fetchDraft   type=fetch      deps: —
+summarize    type=summarize  deps: fetchDraft
+translate    type=translate  deps: fetchDraft
+publish      type=publish    deps: summarize, translate
+```
+
+This is the core design choice. Flow is **declarative**, where Temporal, Inngest, Trigger.dev
+and DBOS are **imperative**: there you write a function, and the graph exists only as the trace
+of what it did. Both models are durable — they trade off differently, and
+[the tradeoff is spelled out below](#how-it-compares).
 
 ---
 
 ## Contents
 
+- [How it compares](#how-it-compares)
+- [When not to use Flow](#when-not-to-use-flow)
 - [Features](#features)
 - [Installation](#installation)
 - [Package layout](#package-layout)
@@ -40,6 +70,49 @@ durable-function model of Temporal/DBOS/Inngest.
 - [Examples](#examples)
 - [API reference](#api-reference)
 - [Testing](#testing)
+
+---
+
+## How it compares
+
+All of these give you durable execution. They differ in **what you operate** and **how the
+workflow is expressed**.
+
+| | **Flow** | **Temporal** | **Inngest** | **Trigger.dev** | **BullMQ** |
+|---|---|---|---|---|---|
+| **Infra you run** | Postgres | a cluster (frontend, history, matching, worker) + a DB | none — engine is hosted | Postgres + Redis (+ ClickHouse recommended at volume) | Redis |
+| **Self-host** | it's a library | yes, MIT | no — engine and dashboard are Inngest-hosted | yes, Apache-2.0 | it's a library |
+| **Model** | declarative — a static DAG value | imperative workflow code | imperative step functions | imperative tasks | job queue; flows are **trees** |
+| **Fan-in / diamond deps** | yes | yes | yes | yes | no — a job can't be shared by two branches |
+| **Inspect before running** | yes — the DAG is a value | no — the graph is the execution trace | no | no | yes — the flow tree is data |
+| **Web dashboard** | **none** — build one on `toPublicWorkflow()` | yes | yes | yes | via third-party UIs |
+| **Languages** | TypeScript | polyglot SDKs | TS, Python, Go, Kotlin | TS | Node (+ ports) |
+| **Maturity** | **pre-1.0** | mature | mature | mature | mature, widely deployed |
+
+The honest summary: **Flow is the smallest thing that is still a real workflow engine.** If
+you already run Postgres, it adds no infrastructure — the queue ([pg-boss](https://github.com/timgit/pg-boss))
+is Postgres too. You give up the dashboards, the polyglot SDKs, and the operational maturity
+that the others have earned.
+
+## When not to use Flow
+
+Reach for something else if:
+
+- **Your control flow is genuinely dynamic.** A declarative DAG is fixed at definition time.
+  Flow softens this with [`defineMapStep`](#dynamic-fan-out--map) (runtime-sized fan-out),
+  [sub-workflows](#sub-workflows), and [`waitForEvent`](#signals--waitforevent) — but if your
+  process is "loop until a human approves, branching on whatever they typed," an imperative
+  durable function will express it more naturally.
+- **You want a UI out of the box.** Flow ships a wire-safe projection
+  ([`toPublicWorkflow`](#serving-workflows-over-http-public-view)) and lifecycle events, not a
+  dashboard. You build it.
+- **You need non-TypeScript workers.** The DAG and its schemas are TypeScript values.
+- **You can't run Postgres**, or you need throughput past what a Postgres-backed queue gives you.
+- **You need a support contract**, or an API frozen by a 1.0 promise. This is pre-1.0 and 0.x
+  minors can break.
+
+Flow fits best when the work is a **known pipeline** — ingest → enrich → summarize → publish —
+that must survive crashes, retry sanely, and stay legible to the next person who reads it.
 
 ---
 
