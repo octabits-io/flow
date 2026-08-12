@@ -80,6 +80,17 @@ signature alone doesn't express — they're documented on the interfaces in
 
 If you add a store, port the behavioural tests in `src/store-pg/store.test.ts`.
 
+## Benchmarks
+
+`npx tsx scripts/bench.ts` measures engine overhead against real Postgres (Docker
+required). Handlers are no-ops by design — it measures the cost of a durable
+transition, not your workload. `BENCH_WORKFLOWS`, `BENCH_CONCURRENCY` and
+`BENCH_SKIP_PGBOSS` tune it.
+
+If you change anything on the step-execution path, run it before and after. The
+numbers in the README are from one machine; re-measure on yours rather than
+trusting the delta against a published figure.
+
 ## The README demo
 
 `docs/demo.svg` is a real recording of [`scripts/demo.ts`](./scripts/demo.ts), not a mockup.

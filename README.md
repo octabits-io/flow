@@ -77,6 +77,7 @@ npx tsx scripts/demo.ts    # reproduce it
 - [Watch it run](#watch-it-run)
 - [How it compares](#how-it-compares)
 - [When not to use Flow](#when-not-to-use-flow)
+- [Performance](#performance)
 - [Features](#features)
 - [Installation](#installation)
 - [Package layout](#package-layout)
@@ -134,6 +135,46 @@ Reach for something else if:
 
 Flow fits best when the work is a **known pipeline** — ingest → enrich → summarize → publish —
 that must survive crashes, retry sanely, and stay legible to the next person who reads it.
+
+---
+
+## Performance
+
+Reproduce with `npx tsx scripts/bench.ts` (Docker required — it starts Postgres 17 via
+Testcontainers). Workload: 200 workflows × 6 steps in a `root → 4 parallel → join` diamond.
+**Handlers are no-ops**, so this measures what the *engine* costs per step — claiming it,
+reading dependency outputs, persisting the transition, recomputing readiness — not your work.
+
+**Engine + Postgres store** (in-process dispatcher), per-step latency:
+
+| concurrency | steps/sec | p50 | p95 | p99 |
+|---|---|---|---|---|
+| 1 | 1,031 | 1.0 ms | 2.1 ms | 2.9 ms |
+| 4 | 1,932 | 2.1 ms | 3.9 ms | 4.8 ms |
+| 16 | 2,108 | 7.1 ms | 12.7 ms | 15.9 ms |
+| 64 | 2,270 | 26.8 ms | 46.8 ms | 64.0 ms |
+
+**End-to-end through pg-boss workers** — the full production path:
+
+| workers | batch | steps/sec |
+|---|---|---|
+| 1 | 25 | 50 |
+| 4 | 50 | 342 |
+| 8 | 100 | 649 |
+
+That first row is not a ceiling, it's a *polling artifact*: one worker fetches a batch, runs it
+in a few milliseconds, then waits out the 0.5 s interval. Two tuning notes follow from it —
+**scale with more workers, not bigger batches** (the step worker runs a batch serially, so batch
+size buys fetch efficiency, not in-batch parallelism), and end-to-end *latency* is the queue's
+polling interval, not the engine's cost.
+
+**How to read this.** Measured on an M-series Mac with Postgres in Docker, which has markedly
+slower disk I/O than a Linux host — expect better on a real server. These are an order of
+magnitude and a scaling shape, not a score. A Redis-backed job queue will beat these numbers
+outright, because it isn't writing a durable transition per step to a relational database;
+that write is the feature. And in any real workflow, handler time dwarfs the 1–3 ms of engine
+overhead, so the practical question is usually whether ~1 ms per transition is acceptable
+next to what your steps actually do.
 
 ---
 
