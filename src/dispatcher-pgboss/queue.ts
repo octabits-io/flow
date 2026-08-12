@@ -1,4 +1,4 @@
-import type { PgBoss, Job, WorkOptions } from 'pg-boss';
+import type { PgBoss, Job, WorkOptions, JobResult } from 'pg-boss';
 import type { Dispatcher, DispatchStepPayload, EnqueueOptions, Result, FlowErrorShape, Logger } from '../core';
 import { WIRE_STEP_PAYLOAD_SCHEMA, DEFAULT_STEP_QUEUE_CONFIG, type WireStepPayload, type StepQueueConfig } from './payload';
 
@@ -88,12 +88,43 @@ export function createPgBossDispatcher(deps: PgBossDispatcherDeps): Dispatcher {
 // Worker
 // ============================================================================
 
+export interface PgBossStepWorkerOptions {
+  /** Steps fetched per poll. Default 1. */
+  batchSize?: number;
+  /** Base poll interval in seconds (pg-boss minimum 0.5). Default: pg-boss's own. */
+  pollingIntervalSeconds?: number;
+  /**
+   * Poll interval used while pg-boss's LISTEN/NOTIFY is active for the queue, where
+   * polling is only a backstop. Ignored when notify is off or unavailable.
+   */
+  notifyPollingIntervalSeconds?: number;
+  /**
+   * Keep fetching with no delay while every fetch returns a full `batchSize` batch;
+   * the first short fetch ends the burst. Ignored when `batchSize` is 1.
+   *
+   * **Worth enabling for throughput.** Without it a worker spends most of its time
+   * waiting out the poll interval: it drains a batch in milliseconds, then sleeps.
+   * See the performance table in the README.
+   */
+  burstWhenBatchFull?: boolean;
+  /** Burst while the queue's cached ready count exceeds this. Reacts on pg-boss's stats cadence. */
+  burstWhenReadyExceeds?: number;
+  /**
+   * How many steps from one fetched batch run at a time. Default 1 (serial).
+   *
+   * Raising this only helps once the worker is not poll-bound — pair it with
+   * `burstWhenBatchFull`. Each in-flight step needs a store connection, so keep
+   * `concurrency × workers` within your Postgres pool and `max_connections`.
+   */
+  concurrency?: number;
+}
+
 export interface PgBossStepWorkerDeps {
   boss: PgBoss;
   queueName: string;
   config?: StepQueueConfig;
   logger?: Logger;
-  workerOptions?: { batchSize?: number; pollingIntervalSeconds?: number };
+  workerOptions?: PgBossStepWorkerOptions;
 }
 
 /** Handles a single step job. Reconstruct the partition-scoped engine and call
@@ -107,19 +138,58 @@ export function createPgBossStepWorker(deps: PgBossStepWorkerDeps) {
 
   async function start(process: StepJobProcessor): Promise<void> {
     await ensureStepQueue(boss, queueName, deps.config);
+    const opts = deps.workerOptions ?? {};
+    const lanes = Math.max(1, opts.concurrency ?? 1);
     const workOpts: WorkOptions = {
-      batchSize: deps.workerOptions?.batchSize ?? 1,
-      ...(deps.workerOptions?.pollingIntervalSeconds != null && { pollingIntervalSeconds: deps.workerOptions.pollingIntervalSeconds }),
+      batchSize: opts.batchSize ?? 1,
+      // Settle each job on its own outcome. Without this pg-boss fails the *whole*
+      // batch when the handler throws, so one bad step would drag its neighbours
+      // into a retry — wasteful, and it muddies which job actually dead-lettered.
+      perJobResults: true,
+      ...(opts.pollingIntervalSeconds != null && { pollingIntervalSeconds: opts.pollingIntervalSeconds }),
+      ...(opts.notifyPollingIntervalSeconds != null && { notifyPollingIntervalSeconds: opts.notifyPollingIntervalSeconds }),
+      ...(opts.burstWhenBatchFull != null && { burstWhenBatchFull: opts.burstWhenBatchFull }),
+      ...(opts.burstWhenReadyExceeds != null && { burstWhenReadyExceeds: opts.burstWhenReadyExceeds }),
     };
+
     workerId = await boss.work<WireStepPayload>(queueName, workOpts, async (jobs: Job<WireStepPayload>[]) => {
-      for (const job of jobs) {
-        const parsed = WIRE_STEP_PAYLOAD_SCHEMA.safeParse(job.data);
-        if (!parsed.success) {
-          // Invalid payload — don't retry, send straight to DLQ
-          throw new Error(`Invalid step payload for job ${job.id}: ${parsed.error.message}`);
-        }
-        await process(parsed.data);
-      }
+      const results: JobResult[] = [];
+      const pending = [...jobs];
+
+      // `lanes` consumers drain the batch. At lanes = 1 this is the original
+      // serial loop; above that, each in-flight step holds a store connection.
+      await Promise.all(
+        Array.from({ length: Math.min(lanes, pending.length) }, async () => {
+          for (;;) {
+            const job = pending.shift();
+            if (!job) break;
+            const parsed = WIRE_STEP_PAYLOAD_SCHEMA.safeParse(job.data);
+            if (!parsed.success) {
+              // Unprocessable: it will not parse on a retry either, so route it
+              // straight to the dead-letter queue instead of burning attempts.
+              results.push({
+                id: job.id,
+                status: 'deadletter',
+                output: { message: `Invalid step payload for job ${job.id}: ${parsed.error.message}` },
+              });
+              continue;
+            }
+            try {
+              await process(parsed.data);
+              results.push({ id: job.id, status: 'completed' });
+            } catch (error) {
+              // Fails only this job — pg-boss applies the queue's retry policy to
+              // it alone, and the rest of the batch keeps its own outcome.
+              results.push({
+                id: job.id,
+                status: 'failed',
+                output: { message: error instanceof Error ? error.message : String(error) },
+              });
+            }
+          }
+        }),
+      );
+      return results;
     });
   }
 

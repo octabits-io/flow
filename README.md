@@ -154,19 +154,23 @@ reading dependency outputs, persisting the transition, recomputing readiness —
 | 16 | 2,108 | 7.1 ms | 12.7 ms | 15.9 ms |
 | 64 | 2,270 | 26.8 ms | 46.8 ms | 64.0 ms |
 
-**End-to-end through pg-boss workers** — the full production path:
+**End-to-end through pg-boss workers** — the full production path, batch 25:
 
-| workers | batch | steps/sec |
-|---|---|---|
-| 1 | 25 | 50 |
-| 4 | 50 | 342 |
-| 8 | 100 | 649 |
+| workers | `burstWhenBatchFull` | `concurrency` | steps/sec |
+|---|---|---|---|
+| 1 | off | 1 | 50 |
+| 1 | **on** | 1 | 274 |
+| 1 | **on** | 8 | 646 |
+| 4 | **on** | 8 | 902 |
 
-That first row is not a ceiling, it's a *polling artifact*: one worker fetches a batch, runs it
-in a few milliseconds, then waits out the 0.5 s interval. Two tuning notes follow from it —
-**scale with more workers, not bigger batches** (the step worker runs a batch serially, so batch
-size buys fetch efficiency, not in-batch parallelism), and end-to-end *latency* is the queue's
-polling interval, not the engine's cost.
+That first row is not a ceiling, it's a *polling artifact* — and the fix is configuration, not
+architecture. A worker drains a batch in milliseconds, then waits out the 0.5 s interval, so
+**`burstWhenBatchFull` is the setting that matters**: it keeps fetching while batches come back
+full. `concurrency` (steps run at once from one batch) then compounds on top — but on its own,
+without burst, it changes nothing at all, because the wait, not the work, is the bottleneck.
+
+Budget connections before raising `concurrency`: each in-flight step holds one, so
+`workers × concurrency` must fit your pool and Postgres `max_connections`.
 
 **How to read this.** Measured on an M-series Mac with Postgres in Docker, which has markedly
 slower disk I/O than a Linux host — expect better on a real server. These are an order of
@@ -422,7 +426,16 @@ const engine = createWorkflowEngine({ store, dispatcher, registry, partitionKey,
 myWorkflow.register(registry);
 
 // Step worker: pull a job, run it. Throwing triggers a pg-boss retry; exhaustion → DLQ.
-const worker = createPgBossStepWorker({ boss, queueName });
+// Each job settles on its own outcome, so one failing step never drags its batch along.
+const worker = createPgBossStepWorker({
+  boss,
+  queueName,
+  workerOptions: {
+    batchSize: 25,
+    burstWhenBatchFull: true, // keep fetching while batches come back full — see Performance
+    concurrency: 8,           // steps run at once from one batch; each holds a store connection
+  },
+});
 await worker.start(async (payload) => {
   await engine.executeStep(payload.workflowId, payload.stepId);
 });

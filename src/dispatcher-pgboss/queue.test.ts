@@ -24,7 +24,7 @@ afterAll(async () => {
   await container?.stop();
 });
 
-function deferred<T>() {
+function deferred<T = void>() {
   let resolve!: (v: T) => void;
   const promise = new Promise<T>((r) => (resolve = r));
   return { promise, resolve };
@@ -88,6 +88,78 @@ describe('pg-boss dispatcher (integration)', () => {
 
     await worker.stop();
     await dlqWorker.stop();
+  });
+
+  it('settles each job in a batch on its own outcome', async () => {
+    // pg-boss fails the WHOLE batch if the handler throws. With per-job settlement
+    // one bad step must not drag its batch neighbours into a retry.
+    const queueName = 'flow-step-perjob';
+    await ensureStepQueue(boss, queueName, { retryLimit: 0 });
+
+    const seen: number[] = [];
+    const dead = deferred<WireStepPayload>();
+    const worker = createPgBossStepWorker({
+      boss, queueName, config: { retryLimit: 0 },
+      workerOptions: { batchSize: 10, pollingIntervalSeconds: 1 },
+    });
+    await worker.start(async (payload) => {
+      seen.push(payload.stepId);
+      if (payload.stepId === 3) throw new Error('step 3 is poison');
+    });
+
+    const dlqWorker = createPgBossDlqWorker({ boss, queueName, pollingIntervalSeconds: 1 });
+    await dlqWorker.start(async (payload) => { dead.resolve(payload); });
+
+    const dispatcher = createPgBossDispatcher({ boss, queueName, partitionKey: 't', config: { retryLimit: 0 } });
+    for (const stepId of [1, 2, 3, 4, 5]) {
+      await dispatcher.enqueueStep({ workflowId: 1, stepId, stepKey: `k${stepId}`, stepType: 'x' });
+    }
+
+    // only the poison step reaches the DLQ
+    const payload = await dead.promise;
+    expect(payload.stepId).toBe(3);
+
+    // and its neighbours were not re-delivered (they completed on their own)
+    await new Promise((r) => setTimeout(r, 1500));
+    for (const stepId of [1, 2, 4, 5]) {
+      expect(seen.filter((s) => s === stepId)).toHaveLength(1);
+    }
+
+    await worker.stop();
+    await dlqWorker.stop();
+  });
+
+  it('runs a batch concurrently when `concurrency` is set', async () => {
+    const queueName = 'flow-step-concurrency';
+    await ensureStepQueue(boss, queueName);
+
+    let inFlight = 0;
+    let peak = 0;
+    const total = 8;
+    let done = 0;
+    const allDone = deferred<void>();
+
+    const worker = createPgBossStepWorker({
+      boss, queueName,
+      workerOptions: { batchSize: total, concurrency: 4, pollingIntervalSeconds: 1 },
+    });
+    await worker.start(async () => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 80));
+      inFlight--;
+      if (++done === total) allDone.resolve();
+    });
+
+    const dispatcher = createPgBossDispatcher({ boss, queueName, partitionKey: 't' });
+    for (let stepId = 1; stepId <= total; stepId++) {
+      await dispatcher.enqueueStep({ workflowId: 2, stepId, stepKey: `c${stepId}`, stepType: 'x' });
+    }
+
+    await allDone.promise;
+    // 4 lanes, never more; serial would peak at 1
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(4);
+    await worker.stop();
   });
 
   it('rejects an invalid payload at enqueue without enqueuing', async () => {

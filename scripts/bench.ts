@@ -185,15 +185,16 @@ async function suiteB(uri: string) {
     c.d('     A single worker is poll-bound: it fetches a batch, runs it, then waits out\n' +
         '     the polling interval. Throughput comes from running several workers.\n'),
   );
-  console.log(c.d('     workers  batch   steps/sec   wall'));
-  console.log(c.d('     ' + '─'.repeat(44)));
+  console.log(c.d('     workers  batch  burst  conc   steps/sec   wall'));
+  console.log(c.d('     ' + '─'.repeat(56)));
 
   const configs = [
-    { workers: 1, batch: 25 },
-    { workers: 4, batch: 50 },
-    { workers: 8, batch: 100 },
+    { workers: 1, batch: 25, burst: false, concurrency: 1 },
+    { workers: 1, batch: 25, burst: true, concurrency: 1 },
+    { workers: 1, batch: 25, burst: true, concurrency: 8 },
+    { workers: 4, batch: 25, burst: true, concurrency: 8 },
   ];
-  const rows: Array<{ workers: number; batch: number; rate: number }> = [];
+  const rows: Array<{ workers: number; batch: number; burst: boolean; concurrency: number; rate: number }> = [];
 
   for (const [runIdx, cfg] of configs.entries()) {
     const queueName = `bench-steps-${runIdx}`;
@@ -219,7 +220,12 @@ async function suiteB(uri: string) {
         const w = createPgBossStepWorker({
           boss,
           queueName,
-          workerOptions: { pollingIntervalSeconds: 0.5, batchSize: cfg.batch },
+          workerOptions: {
+            pollingIntervalSeconds: 0.5,
+            batchSize: cfg.batch,
+            burstWhenBatchFull: cfg.burst,
+            concurrency: cfg.concurrency,
+          },
         });
         await w.start(async (payload) => {
           await engine.executeStep(payload.workflowId, payload.stepId);
@@ -238,10 +244,11 @@ async function suiteB(uri: string) {
     ]);
     const elapsed = performance.now() - started;
     const rate = (done / elapsed) * 1000;
-    rows.push({ workers: cfg.workers, batch: cfg.batch, rate });
+    rows.push({ workers: cfg.workers, batch: cfg.batch, burst: cfg.burst, concurrency: cfg.concurrency, rate });
 
     console.log(
-      `     ${String(cfg.workers).padStart(7)}  ${String(cfg.batch).padStart(5)}   ` +
+      `     ${String(cfg.workers).padStart(7)}  ${String(cfg.batch).padStart(5)}  ` +
+        `${(cfg.burst ? 'yes' : 'no').padStart(5)}  ${String(cfg.concurrency).padStart(4)}   ` +
         `${c.gr(rate.toFixed(0).padStart(9))}   ${c.d(`${(elapsed / 1000).toFixed(1)}s`)}` +
         (timedOut ? c.d(`  (timed out at ${done}/${target})`) : ''),
     );
@@ -253,12 +260,13 @@ async function suiteB(uri: string) {
 
   const best = rows.reduce((m, r) => (r.rate > m.rate ? r : m), rows[0]!);
   console.log(
-    c.d(`\n     peak ${best.rate.toFixed(0)} steps/sec with ${best.workers} workers (batch ${best.batch})`),
+    c.d(`\n     peak ${best.rate.toFixed(0)} steps/sec — ${best.workers} workers, batch ${best.batch}, burst ${best.burst ? 'on' : 'off'}, concurrency ${best.concurrency}`),
   );
   console.log(
     c.d('     Latency here is queue polling, not engine cost — suite A is the engine.\n' +
-        '     Note the shipped worker runs a batch serially, so batch size raises\n' +
-        '     fetch efficiency, not in-batch parallelism.'),
+        '     Without burst a worker is poll-bound: it drains a batch in milliseconds, then\n' +
+        '     waits out the interval. Concurrency only pays once burst removes that wait —\n' +
+        '     on its own it moves nothing.'),
   );
   return rows;
 }
