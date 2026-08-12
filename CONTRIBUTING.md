@@ -80,6 +80,24 @@ signature alone doesn't express — they're documented on the interfaces in
 
 If you add a store, port the behavioural tests in `src/store-pg/store.test.ts`.
 
+## The docs site
+
+`website/` is an Astro Starlight site, deployed to GitHub Pages by
+`.github/workflows/docs.yml` on every push to `main`. It is **its own pnpm root** — its
+dependencies deliberately never enter the library's graph, so `pnpm install` at the repo
+root stays small and the boundary lint keeps meaning what it says.
+
+```bash
+cd website
+pnpm install
+pnpm dev      # local preview
+pnpm build    # what CI runs
+```
+
+Most pages were extracted from the README, which now keeps only the overview and links
+out for depth. When you change behaviour, update the page under
+`website/src/content/docs/` — not the README — unless it belongs in the pitch.
+
 ## Benchmarks
 
 `npx tsx scripts/bench.ts` measures engine overhead against real Postgres (Docker

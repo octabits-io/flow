@@ -1,0 +1,27 @@
+---
+title: Concepts
+description: Step, workflow, registry, store, dispatcher, engine, partition — and how the engine self-advances.
+---
+
+- **Step** — a unit of work with a Zod `workflowInputSchema`, an `outputSchema`, optional
+  `dependencies`, and a `handler`. Created with `defineStep` (or the variants below).
+- **Workflow** — a named DAG of steps. `buildWorkflow({ type, inputSchema, steps })` derives the
+  dependency graph and validates at build time that every dependency key references a real step.
+- **Registry** — maps a step's `type` string to its handler + policy. `wf.register(registry)`
+  populates it; the engine looks handlers up by type at run time.
+- **Store** (`WorkflowStore`) — persistence for workflow + step rows. `createInMemoryWorkflowStore()`
+  for tests/single-process; `createPgWorkflowStore()` for production.
+- **Dispatcher** (`Dispatcher`) — enqueues a step to run. The engine calls it to schedule ready
+  steps (and retries/sleeps via `startAfterSeconds`). In-process array for tests;
+  `createPgBossDispatcher()` for a durable queue.
+- **Engine** — `createWorkflowEngine({ store, dispatcher, registry, partitionKey, ... })`. Orchestrates
+  readiness, parallelism, retries, failure cascade, and crash recovery. Bound to one **partition**.
+- **Partition** — a tenancy boundary (`partitionKey`, e.g. a tenant id) stamped on every row and
+  job. One engine instance serves one partition.
+- **`Result<T, E>`** — every fallible call returns `{ ok: true, value }` or `{ ok: false, error }`;
+  expected failures are values, not exceptions.
+
+The engine is **self-advancing**: starting a workflow enqueues its dependency-free roots; as each
+step completes the engine enqueues newly-ready steps — so parallelism and fan-in happen
+automatically. A failed step (after retries) **cascades**: still-pending dependents are skipped and
+the workflow ends `failed`.

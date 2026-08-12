@@ -1,0 +1,5 @@
+# Makes website/ its own pnpm root, so the docs site's dependencies never enter the
+# library's graph. Astro's toolchain needs these two to run their install scripts.
+allowBuilds:
+  esbuild: true
+  sharp: true

@@ -1,0 +1,17 @@
+{
+  "name": "@octabits-io/flow-website",
+  "private": true,
+  "type": "module",
+  "description": "Documentation site for @octabits-io/flow. Isolated from the library's dependency graph on purpose — nothing here is published.",
+  "scripts": {
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.41.7",
+    "astro": "^7.2.1",
+    "sharp": "^0.34.0"
+  }
+}

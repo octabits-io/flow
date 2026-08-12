@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 32" role="img" aria-label="Flow">
+  <!-- The diamond DAG the docs open with: one root, two parallel branches, a join. -->
+  <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+    <path d="M12 16 L22 8" opacity="0.55" />
+    <path d="M12 16 L22 24" opacity="0.55" />
+    <path d="M26 8 L36 16" opacity="0.55" />
+    <path d="M26 24 L36 16" opacity="0.55" />
+  </g>
+  <g fill="currentColor">
+    <circle cx="8" cy="16" r="4" />
+    <circle cx="24" cy="6" r="3.5" />
+    <circle cx="24" cy="26" r="3.5" />
+    <circle cx="40" cy="16" r="4" />
+  </g>
+</svg>

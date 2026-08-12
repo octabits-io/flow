@@ -1,0 +1,17 @@
+/* Flow's accent: the same green the demo uses for a completed step. */
+:root {
+  --sl-color-accent-low: #0d2818;
+  --sl-color-accent: #16794a;
+  --sl-color-accent-high: #9ae6c0;
+}
+:root[data-theme='light'] {
+  --sl-color-accent-low: #c7f0dc;
+  --sl-color-accent: #10683f;
+  --sl-color-accent-high: #06301d;
+}
+/* Wide tables (the comparison, the benchmark) scroll instead of pushing the page. */
+.sl-markdown-content table {
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
