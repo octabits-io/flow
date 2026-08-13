@@ -359,8 +359,23 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       return { ok: false, error: { key: 'workflow_not_found', message: `Step ${stepId} not found` } };
     }
 
-    // Idempotency: a re-delivered job for an already-handled step is a no-op
     if (step.status !== 'pending') {
+      // A redelivered job for a step that already COMPLETED is the one signal that
+      // the advance which should have followed it may never have happened: the
+      // engine commits the completion and enqueues the newly-ready steps as
+      // separate operations, so a crash in that window leaves the dependents
+      // `pending` with no job behind them — invisible to the stuck-step sweeper,
+      // which only looks at `running`. Re-drive readiness rather than no-op.
+      //
+      // Safe to repeat: dispatching an already-queued step is harmless because
+      // claiming it is atomic, so the duplicate delivery loses and does nothing.
+      const workflowLive = workflow.status === 'running' || workflow.status === 'pending';
+      if (step.status === 'completed' && workflowLive) {
+        logger.info('Re-driving advance for a redelivered completed step', { workflowId, stepId, stepKey: step.key });
+        if (step.parentStepId != null) await advanceAfterChildCompleted(workflowId, step);
+        else await advanceAfterStepCompleted(workflowId, stepId, step.output ?? {});
+        return { ok: true, value: undefined };
+      }
       logger.info('Skipping already-processed step', { workflowId, stepId, stepKey: step.key, status: step.status });
       return { ok: true, value: undefined };
     }
@@ -552,9 +567,17 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   // --------------------------------------------------------------------------
 
   async function onStepCompleted(workflowId: WorkflowId, stepId: StepId, output: Record<string, unknown>): Promise<void> {
-    const completedAt = nowIso();
-    await store.completeStep({ workflowId, stepId, output, completedAt });
+    await store.completeStep({ workflowId, stepId, output, completedAt: nowIso() });
+    await advanceAfterStepCompleted(workflowId, stepId, output);
+  }
 
+  /**
+   * The readiness half of a completion, without the write. Split out so a
+   * redelivered job for an already-completed step can re-drive it — see the
+   * recovery branch in {@link executeStep}. Idempotent: dispatching a step that
+   * is already queued is harmless, because claiming it is atomic.
+   */
+  async function advanceAfterStepCompleted(workflowId: WorkflowId, stepId: StepId, output: Record<string, unknown>): Promise<void> {
     const allSteps = await store.listSteps(workflowId);
     // Map children are internal — only keyed DAG steps drive readiness/termination.
     const keyedSteps = allSteps.filter((s) => s.parentStepId == null);
@@ -592,7 +615,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
           aggregatedOutput[s.key] = s.id === stepId ? output : (s.output ?? null);
         }
       }
-      await store.finishWorkflow({ workflowId, status: 'completed', output: aggregatedOutput, completedAt });
+      await store.finishWorkflow({ workflowId, status: 'completed', output: aggregatedOutput, completedAt: nowIso() });
       logger.info('Workflow completed', { workflowId });
       emit({ type: 'workflow.completed', workflowId });
 
@@ -648,6 +671,11 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   /** A map child completed — complete the parent (with aggregated outputs) once all siblings finish. */
   async function onChildCompleted(workflowId: WorkflowId, childStep: StepRecord, output: Record<string, unknown>): Promise<void> {
     await store.completeStep({ workflowId, stepId: childStep.id, output, completedAt: nowIso() });
+    await advanceAfterChildCompleted(workflowId, childStep);
+  }
+
+  /** The aggregation half of a map child's completion, without the write. */
+  async function advanceAfterChildCompleted(workflowId: WorkflowId, childStep: StepRecord): Promise<void> {
     const parentId = childStep.parentStepId!;
     const children = await store.listChildSteps(parentId);
 

@@ -455,6 +455,66 @@ describe('createWorkflowEngine', () => {
     expect(steps[0]?.attempts).toBe(1);
   });
 
+  it('re-drives the advance when a completed step is redelivered after a lost dispatch', async () => {
+    // The engine commits `completeStep` and then enqueues the newly-ready steps as
+    // separate operations. A crash in that window leaves the dependents `pending`
+    // with no job behind them — invisible to the stuck-step sweeper, which only
+    // looks at `running`. The queue redelivering the completed step's job is the
+    // only signal left, so that redelivery has to re-drive readiness.
+    const order: string[] = [];
+    const store = createInMemoryWorkflowStore();
+    const registry = createStepHandlerRegistry<Ctx>();
+    const queue: DispatchStepPayload[] = [];
+    let loseB = true;
+    const dispatcher: Dispatcher = {
+      async enqueueStep(p) {
+        if (p.stepKey === 'b' && loseB) {
+          loseB = false; // reports success, job never arrives — as a crash would look
+          return { ok: true, value: undefined };
+        }
+        queue.push(p);
+        return { ok: true, value: undefined };
+      },
+    };
+    const engine = createWorkflowEngine<Ctx>({ store, registry, dispatcher, partitionKey: 'test' });
+    const wf = linearWorkflow(order); // a → b → c
+    wf.register(registry);
+
+    const drain = async () => {
+      let guard = 0;
+      while (queue.length) {
+        if (++guard > 100) throw new Error('runaway');
+        const p = queue.shift()!;
+        try { await engine.executeStep(p.workflowId, p.stepId); } catch { /* DLQ */ }
+      }
+    };
+
+    const started = await wf.start(engine, { seed: 'x' });
+    if (!started.ok) return;
+    await drain();
+
+    // `a` ran, `b`'s job was lost — the workflow is stalled, and nothing reports it.
+    expect(order).toEqual(['a:none']);
+    const stalled = await engine.getWorkflowStatus(started.value.workflowId);
+    if (!stalled.ok) return;
+    expect(stalled.value.status).toBe('running');
+    expect(stalled.value.steps.find((s) => s.key === 'b')!.status).toBe('pending');
+
+    // The worker died before acking, so the queue redelivers `a`'s job.
+    const aStep = (await store.listSteps(started.value.workflowId)).find((s) => s.key === 'a')!;
+    await engine.executeStep(started.value.workflowId, aStep.id);
+    await drain();
+
+    // `a` must not run twice, but the DAG must advance.
+    expect(order).toEqual(['a:none', 'b', 'c']);
+    const done = await engine.getWorkflowStatus(started.value.workflowId);
+    if (!done.ok) return;
+    expect(done.value.status).toBe('completed');
+    // Re-driving must not re-write the completion: the counter would inflate to 4.
+    expect(done.value.completedSteps).toBe(3);
+    expect(done.value.steps.filter((s) => s.key === 'a')).toHaveLength(1);
+  });
+
   it('handleStepExhausted marks the step failed and cascades the workflow', async () => {
     const order: string[] = [];
     const h = harness();
