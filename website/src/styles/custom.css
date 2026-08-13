@@ -1,17 +1,130 @@
-/* Flow's accent: the same green the demo uses for a completed step. */
+/*
+ * Flow's palette, shared with the social card and the terminal demo: a near-black
+ * with a green cast rather than a neutral grey, and #6fd3a3 — the same green the
+ * demo prints a completed step in — as the accent.
+ *
+ * Starlight treats `:root` as the dark theme and overrides it for light.
+ */
 :root {
-  --sl-color-accent-low: #0d2818;
-  --sl-color-accent: #16794a;
-  --sl-color-accent-high: #9ae6c0;
+  --flow-green: #6fd3a3;
+  --flow-green-deep: #16794a;
+
+  --sl-color-accent-low: #0e3a26;
+  --sl-color-accent: #2f9b6a;
+  --sl-color-accent-high: #8ee0b8;
+
+  /* Green-tinted greyscale — the neutral one reads cold against the accent. */
+  --sl-color-white: #e8f2ed;
+  --sl-color-gray-1: #d7e6df;
+  --sl-color-gray-2: #9db3aa;
+  --sl-color-gray-3: #6b8579;
+  --sl-color-gray-4: #3d5349;
+  --sl-color-gray-5: #24352e;
+  --sl-color-gray-6: #16241f;
+  --sl-color-gray-7: #101b17;
+  --sl-color-black: #0b1411;
+
+  --sl-color-bg-inline-code: #16241f;
+  --sl-color-hairline-light: #24352e;
+  --sl-color-hairline: #1a2823;
 }
+
 :root[data-theme='light'] {
   --sl-color-accent-low: #c7f0dc;
   --sl-color-accent: #10683f;
   --sl-color-accent-high: #06301d;
+
+  --sl-color-white: #0b1411;
+  --sl-color-gray-1: #16241f;
+  --sl-color-gray-2: #35463f;
+  --sl-color-gray-3: #5c7a6d;
+  --sl-color-gray-4: #8aa298;
+  --sl-color-gray-5: #cfe0d8;
+  --sl-color-gray-6: #e8f2ed;
+  --sl-color-gray-7: #f2f8f5;
+  --sl-color-black: #fbfdfc;
+
+  --sl-color-bg-inline-code: #e8f2ed;
+  --sl-color-hairline-light: #d3e3db;
+  --sl-color-hairline: #e2eee8;
 }
+
+/*
+ * The card's radial glow, reused as a page wash. Fixed and behind everything, so
+ * it stays put while the content scrolls instead of sliding away.
+ */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(1100px 560px at 80% 0%, rgba(22, 121, 74, 0.26), transparent 64%),
+    radial-gradient(760px 460px at 2% 100%, rgba(22, 121, 74, 0.14), transparent 60%);
+}
+:root[data-theme='light'] body::before {
+  background:
+    radial-gradient(1100px 520px at 78% 0%, rgba(22, 121, 74, 0.12), transparent 62%),
+    radial-gradient(760px 460px at 4% 100%, rgba(22, 121, 74, 0.07), transparent 60%);
+}
+
+/* The splash hero: match the card's weight and let the accent carry the emphasis. */
+.hero h1 {
+  letter-spacing: -0.028em;
+}
+.hero .tagline {
+  color: var(--sl-color-gray-2);
+}
+
+/* Feature cards read as panels, like the card's pills. */
+.card {
+  background: color-mix(in srgb, var(--sl-color-gray-6) 55%, transparent);
+  border-color: color-mix(in srgb, var(--flow-green) 22%, transparent);
+}
+
+/*
+ * Starlight's default 45rem content column squeezes the six-column comparison table
+ * into a wall of wrapped words. These docs are code- and table-heavy, so give the
+ * column more room — still a comfortable measure for prose.
+ */
+:root {
+  --sl-content-width: 52rem;
+}
+
 /* Wide tables (the comparison, the benchmark) scroll instead of pushing the page. */
 .sl-markdown-content table {
   display: block;
   overflow-x: auto;
   max-width: 100%;
+  font-size: 0.92rem;
+}
+.sl-markdown-content table :is(th, td) {
+  /* Stop a two-word cell breaking across four lines in a narrow column. */
+  min-width: 7.5rem;
+  vertical-align: top;
+}
+
+/*
+ * The demo recording is a 40-row terminal, so at full width it towers over the rest
+ * of the page. Cap and centre it, and give it a ground so it doesn't wash out.
+ */
+.sl-markdown-content img[src$='demo.svg'] {
+  display: block;
+  margin-inline: auto;
+  max-width: 720px;
+  width: 100%;
+  border: 1px solid var(--sl-color-hairline-light);
+  border-radius: 10px;
+  background: var(--sl-color-black);
+}
+
+/*
+ * The mark is drawn with `currentColor`, which inherits the header's text colour and
+ * all but disappears on the dark ground. Paint it with the accent in both themes.
+ */
+.site-title svg,
+header svg.starlight-logo,
+a[href$='/flow/'] > svg {
+  color: var(--sl-color-accent-high);
 }

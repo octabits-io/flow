@@ -25,6 +25,13 @@ export default defineConfig({
       editLink: {
         baseUrl: 'https://github.com/octabits-io/flow/edit/main/website/',
       },
+      // Share the repo's social card, so a link to the docs previews the same
+      // artwork as a link to GitHub.
+      head: [
+        { tag: 'meta', attrs: { property: 'og:image', content: `${site}${base}/flow-social-preview.png` } },
+        { tag: 'meta', attrs: { name: 'twitter:image', content: `${site}${base}/flow-social-preview.png` } },
+        { tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
+      ],
       lastUpdated: true,
       customCss: ['./src/styles/custom.css'],
       sidebar: [
