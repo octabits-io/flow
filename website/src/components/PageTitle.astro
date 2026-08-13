@@ -1,0 +1,17 @@
+---
+/**
+ * Starlight override: suppress the automatic page <h1> on splash pages.
+ *
+ * The landing page supplies its own headline inside `.flow-hero`, so the default
+ * title would render "Flow" a second time and put two <h1>s in the document.
+ * Hiding it with CSS took it out of the accessibility tree but left it in the
+ * HTML; not rendering it at all is the actual fix.
+ *
+ * Every other page keeps the stock behaviour.
+ */
+import Default from '@astrojs/starlight/components/PageTitle.astro';
+
+const isSplash = Astro.locals.starlightRoute.entry.data.template === 'splash';
+---
+
+{!isSplash && <Default />}

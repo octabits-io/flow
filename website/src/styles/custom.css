@@ -227,11 +227,13 @@ a[href$='/flow/'] > svg {
 }
 
 /*
- * The splash template prints the frontmatter title as its own <h1>. The hero below
- * carries the real headline, so hide it — otherwise the page shows "Flow" twice and
- * ships two <h1>s. The title is still used for <title>, search and social cards.
+ * With the PageTitle override the splash page's first content panel renders empty,
+ * and the panel after it draws a divider that now separates nothing. Drop both so
+ * the hero meets the header cleanly.
  */
 body:has(.flow-hero) .content-panel:first-of-type {
-  /* The panel holds only that title, so hiding the panel also drops its divider. */
   display: none;
+}
+body:has(.flow-hero) .content-panel:nth-of-type(2) {
+  border-top: 0;
 }

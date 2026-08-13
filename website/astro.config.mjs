@@ -34,6 +34,10 @@ export default defineConfig({
       ],
       lastUpdated: true,
       customCss: ['./src/styles/custom.css'],
+      components: {
+        // Suppresses the automatic <h1> on the splash page; see the component.
+        PageTitle: './src/components/PageTitle.astro',
+      },
       sidebar: [
         {
           label: 'Start here',
