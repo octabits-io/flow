@@ -2,22 +2,50 @@
 title: Flow
 description: Durable workflows for TypeScript that run on the Postgres you already have. A declarative, inspectable DAG — not imperative durable functions.
 template: splash
-hero:
-  tagline: Durable workflows for TypeScript that run on the Postgres you already have. No workflow server, no control plane, no vendor — a library you import, not a platform you adopt.
-  actions:
-    - text: Quick start
-      link: /flow/start/quick-start/
-      icon: right-arrow
-    - text: How it compares
-      link: /flow/start/how-it-compares/
-      variant: minimal
-    - text: GitHub
-      link: https://github.com/octabits-io/flow
-      icon: external
-      variant: minimal
 ---
 
 import { Card, CardGrid, Code } from '@astrojs/starlight/components';
+
+<div class="flow-hero">
+  <div class="flow-hero__copy">
+    <p class="flow-hero__eyebrow">@octabits-io/flow</p>
+    <h1 class="flow-hero__title">
+      Durable workflows on the Postgres you <em>already have</em>.
+    </h1>
+    <p class="flow-hero__sub">
+      A declarative DAG you can inspect — not imperative durable functions.
+      No workflow server, no control plane, no vendor.
+    </p>
+    <div class="flow-hero__tags">
+      <span>TypeScript</span>
+      <span>Zod-typed steps</span>
+      <span>retries · signals · sagas</span>
+      <span>MIT</span>
+    </div>
+    <div class="flow-hero__actions">
+      <a class="flow-btn flow-btn--primary" href="/flow/start/quick-start/">Quick start →</a>
+      <a class="flow-btn" href="/flow/start/how-it-compares/">How it compares</a>
+      <a class="flow-btn" href="https://github.com/octabits-io/flow">GitHub</a>
+    </div>
+  </div>
+
+  <svg class="flow-hero__dag" viewBox="0 0 360 392" fill="none" role="img"
+       aria-label="A diamond DAG: fetch, then summarize and translate running in parallel, then publish">
+    <g stroke="var(--flow-edge)" stroke-width="3" stroke-linecap="round">
+      <path d="M92 196 L176 104" /><path d="M92 196 L176 288" />
+      <path d="M212 104 L296 196" /><path d="M212 288 L296 196" />
+    </g>
+    <circle cx="62" cy="196" r="26" fill="var(--sl-color-black)" stroke="var(--flow-green)" stroke-width="3.5"/>
+    <circle cx="194" cy="104" r="22" fill="var(--flow-green)"/>
+    <circle cx="194" cy="288" r="22" fill="var(--flow-green)"/>
+    <circle cx="326" cy="196" r="26" fill="var(--sl-color-black)" stroke="var(--flow-green)" stroke-width="3.5"/>
+    <text x="62" y="252" text-anchor="middle">fetch</text>
+    <text x="194" y="66" text-anchor="middle">summarize</text>
+    <text x="194" y="336" text-anchor="middle">translate</text>
+    <text x="326" y="252" text-anchor="middle">publish</text>
+    <text x="194" y="378" text-anchor="middle" class="flow-hero__dag-note">these two run in parallel</text>
+  </svg>
+</div>
 
 <CardGrid>
   <Card title="Declarative, not imperative" icon="seti:config">

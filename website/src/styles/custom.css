@@ -128,3 +128,110 @@ header svg.starlight-logo,
 a[href$='/flow/'] > svg {
   color: var(--sl-color-accent-high);
 }
+
+/* ---------------------------------------------------------------------------
+ * Landing hero — the social card, rebuilt as live text so it reflows, stays
+ * selectable and searchable, and follows the theme rather than being a picture.
+ * ------------------------------------------------------------------------- */
+:root { --flow-edge: #2f6b52; }
+:root[data-theme='light'] { --flow-edge: #93c9b0; }
+
+.flow-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 3.5rem;
+  padding: 3.5rem 0 4.5rem;
+}
+.flow-hero__eyebrow {
+  font-family: var(--sl-font-mono, ui-monospace, monospace);
+  font-size: 1.05rem;
+  color: var(--sl-color-accent-high);
+  margin: 0 0 1.1rem;
+}
+.flow-hero__title {
+  font-size: clamp(2.1rem, 4.6vw, 3.6rem);
+  line-height: 1.1;
+  letter-spacing: -0.028em;
+  font-weight: 700;
+  margin: 0;
+  max-width: 17ch;
+}
+.flow-hero__title em {
+  font-style: normal;
+  color: var(--sl-color-accent-high);
+}
+.flow-hero__sub {
+  margin: 1.3rem 0 0;
+  font-size: clamp(1rem, 1.5vw, 1.25rem);
+  line-height: 1.5;
+  color: var(--sl-color-gray-2);
+  max-width: 34ch;
+}
+.flow-hero__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 1.7rem;
+}
+.flow-hero__tags span {
+  font-size: 0.85rem;
+  color: var(--sl-color-gray-2);
+  border: 1px solid color-mix(in srgb, var(--flow-green) 34%, transparent);
+  background: color-mix(in srgb, var(--flow-green-deep) 12%, transparent);
+  border-radius: 999px;
+  padding: 0.35rem 0.85rem;
+  white-space: nowrap;
+}
+.flow-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 2.1rem;
+}
+.flow-btn {
+  display: inline-block;
+  padding: 0.7rem 1.4rem;
+  border-radius: 999px;
+  font-size: 1rem;
+  font-weight: 600;
+  text-decoration: none;
+  color: var(--sl-color-white);
+  border: 1px solid var(--sl-color-gray-5);
+}
+.flow-btn:hover { border-color: var(--sl-color-accent); }
+.flow-btn--primary {
+  background: var(--sl-color-accent-high);
+  border-color: var(--sl-color-accent-high);
+  color: var(--sl-color-black);
+}
+.flow-btn--primary:hover { filter: brightness(1.08); }
+
+.flow-hero__dag { width: 340px; height: auto; }
+.flow-hero__dag text {
+  font-family: var(--sl-font-mono, ui-monospace, monospace);
+  font-size: 15px;
+  fill: var(--sl-color-gray-3);
+}
+.flow-hero__dag-note { fill: var(--sl-color-gray-4) !important; }
+
+/* Stack on narrow screens; the diagram goes first so it isn't stranded below. */
+@media (max-width: 50rem) {
+  .flow-hero {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2.5rem;
+    padding: 2rem 0 3rem;
+  }
+  .flow-hero__dag { width: min(280px, 80%); margin-inline: auto; }
+  .flow-hero__title, .flow-hero__sub { max-width: none; }
+}
+
+/*
+ * The splash template prints the frontmatter title as its own <h1>. The hero below
+ * carries the real headline, so hide it — otherwise the page shows "Flow" twice and
+ * ships two <h1>s. The title is still used for <title>, search and social cards.
+ */
+body:has(.flow-hero) .content-panel:first-of-type {
+  /* The panel holds only that title, so hiding the panel also drops its divider. */
+  display: none;
+}
