@@ -1,5 +1,71 @@
 # @octabits-io/flow
 
+## 0.15.0
+
+### Minor Changes
+
+- [`134a4ba`](https://github.com/octabits-io/octaflow/commit/134a4ba37756f85a879b57edfc4e0f20fc7b605f) - Commit a state change and the dispatches it unlocks in one transaction, when the
+  adapters allow it.
+  
+  The engine wrote state and then enqueued, as two operations. A crash in that
+  window left steps `pending` with no job behind them — a workflow stalled forever,
+  invisible to `recoverStuckWorkflows`, which only looks at steps stuck in
+  `running`. An ordinary deploy was enough. `startWorkflow` had the same shape: a
+  queue failure returned `ok` with a workflow nobody would ever run.
+  
+  Two optional capabilities close it:
+  
+  - `WorkflowStore.runInTransaction(fn)` — runs `fn` in one transaction, handing it
+    a transaction-bound store and an opaque handle. Implemented by `store-pg`.
+  - `Dispatcher.enqueueStepIn(handle, payload, options)` — enqueues on that handle.
+    Implemented by `dispatcher-pgboss` via pg-boss's `SendOptions.db`.
+  
+  The engine negotiates at construction. **Both present → the write and its
+  dispatches commit atomically; either missing → the previous behaviour, unchanged.**
+  So `store-pg` + `dispatcher-pgboss` on one Postgres now gets an exactly-once
+  handoff, while a queue in a different system (SQS, Redis) keeps working as before.
+  
+  Both additions are optional, so existing custom stores and dispatchers continue
+  to compile and run.
+  
+  Two deliberate boundaries:
+  
+  - Only writes and enqueues go inside the transaction. The failure path runs saga
+    compensation — user handlers that may do network I/O — so it stays outside; a
+    rollback handler must never hold a database transaction open.
+  - `workflow.started` is now emitted after the transaction commits, so an observer
+    never records a workflow that rolled back.
+  
+  Currently covers `startWorkflow` and step completion, the two paths that run on
+  every workflow. Map fan-out and sub-workflow starts still write-then-enqueue and
+  are covered by the redelivery repair added alongside this.
+
+### Patch Changes
+
+- [`55d3c69`](https://github.com/octabits-io/octaflow/commit/55d3c691761385895dad8be4ee489692851175aa) - Fix a permanent stall when the dispatch following a step completion is lost.
+  
+  The engine commits `completeStep` and then enqueues the newly-ready steps as
+  separate operations. A crash in that window — an ordinary deploy is enough —
+  left the dependents `pending` with no job behind them. Nothing recovered it:
+  `recoverStuckWorkflows` only looks at steps stuck in `running`, so a step that
+  was never picked up is invisible to it, and the workflow sat in `running`
+  forever with no error.
+  
+  The queue redelivering the completed step's job was the one remaining signal,
+  and the engine discarded it — a redelivered job for a non-`pending` step
+  returned early as "already processed".
+  
+  A redelivered job for a step that already **completed** now re-drives readiness
+  instead of no-opping, for both keyed steps and map children. It re-runs only the
+  advance, not the completion write, so counters are not inflated; and repeating a
+  dispatch is safe because claiming a step is atomic, so the duplicate delivery
+  loses and does nothing.
+  
+  This is a repair path, not a guarantee: it depends on the dispatcher redelivering
+  the completed step's job. Removing the underlying dual write — enqueueing inside
+  the same transaction as the state change, which pg-boss supports via
+  `SendOptions.db` — is the durable fix and is tracked separately.
+
 ## 0.14.0
 
 ### Minor Changes
