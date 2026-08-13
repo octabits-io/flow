@@ -18,7 +18,7 @@
  * Realm-safe marker for an explicit retryability decision. `Symbol.for` so a
  * duplicated copy of this module still reads markers set by the other copy.
  */
-const RETRYABLE = Symbol.for('@octabits-io/flow.retryable');
+const RETRYABLE = Symbol.for('octaflow.retryable');
 
 /**
  * Fallback store for errors that cannot carry a property — frozen, sealed, or

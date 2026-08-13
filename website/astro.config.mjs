@@ -2,11 +2,11 @@
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 
-// Served from GitHub Pages at https://octabits-io.github.io/flow/, so every
+// Served from GitHub Pages at https://octabits-io.github.io/octaflow/, so every
 // internal link has to carry the /flow base. Override with SITE / BASE when
 // hosting elsewhere (a custom domain wants base: '/').
 const site = process.env.SITE ?? 'https://octabits-io.github.io';
-const base = process.env.BASE ?? '/flow';
+const base = process.env.BASE ?? '/octaflow';
 
 export default defineConfig({
   site,
@@ -19,17 +19,17 @@ export default defineConfig({
         'Durable workflows for TypeScript that run on the Postgres you already have. A declarative, inspectable DAG — not imperative durable functions.',
       logo: { src: './src/assets/logo.svg', replacesTitle: false },
       social: [
-        { icon: 'github', label: 'GitHub', href: 'https://github.com/octabits-io/flow' },
-        { icon: 'npm', label: 'npm', href: 'https://www.npmjs.com/package/@octabits-io/flow' },
+        { icon: 'github', label: 'GitHub', href: 'https://github.com/octabits-io/octaflow' },
+        { icon: 'npm', label: 'npm', href: 'https://www.npmjs.com/package/octaflow' },
       ],
       editLink: {
-        baseUrl: 'https://github.com/octabits-io/flow/edit/main/website/',
+        baseUrl: 'https://github.com/octabits-io/octaflow/edit/main/website/',
       },
       // Share the repo's social card, so a link to the docs previews the same
       // artwork as a link to GitHub.
       head: [
-        { tag: 'meta', attrs: { property: 'og:image', content: `${site}${base}/flow-social-preview.png` } },
-        { tag: 'meta', attrs: { name: 'twitter:image', content: `${site}${base}/flow-social-preview.png` } },
+        { tag: 'meta', attrs: { property: 'og:image', content: `${site}${base}/octaflow-social-preview.png` } },
+        { tag: 'meta', attrs: { name: 'twitter:image', content: `${site}${base}/octaflow-social-preview.png` } },
         { tag: 'meta', attrs: { name: 'twitter:card', content: 'summary_large_image' } },
       ],
       lastUpdated: true,

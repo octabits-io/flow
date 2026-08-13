@@ -6,7 +6,7 @@
  * request, or two overlapping cron ticks can't start the same work twice.
  */
 import { z } from 'zod';
-import { defineStep, buildWorkflow } from '@octabits-io/flow';
+import { defineStep, buildWorkflow } from 'octaflow';
 import { createInMemoryRuntime } from './runtime';
 
 const inputSchema = z.object({ fileId: z.string() });

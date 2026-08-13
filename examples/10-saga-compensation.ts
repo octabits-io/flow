@@ -11,7 +11,7 @@
  * release the reservation — in that order.
  */
 import { z } from 'zod';
-import { defineStep, buildWorkflow } from '@octabits-io/flow';
+import { defineStep, buildWorkflow } from 'octaflow';
 import { createInMemoryRuntime } from './runtime';
 
 const inputSchema = z.object({});

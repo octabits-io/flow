@@ -12,13 +12,13 @@ const flaky = defineStep({
 });
 ```
 A failure is retried (with backoff via the dispatcher's `startAfterSeconds`) up to `maxAttempts`;
-after that the step fails terminally. → [`examples/03-retry-timeout.ts`](https://github.com/octabits-io/flow/blob/main/examples/03-retry-timeout.ts)
+after that the step fails terminally. → [`examples/03-retry-timeout.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/03-retry-timeout.ts)
 
 **Which failures count as retryable** is decided in this order:
 
 1. **An explicit marker on the error** — always wins.
    ```ts
-   import { retryableError, nonRetryableError, markRetryable } from '@octabits-io/flow';
+   import { retryableError, nonRetryableError, markRetryable } from 'octaflow';
 
    throw retryableError('encoder busy');              // retry, whatever the message says
    throw nonRetryableError('timeout must be > 0');    // never retry — a bug, not a blip

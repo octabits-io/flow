@@ -1,11 +1,11 @@
 # flow examples
 
-Runnable, focused examples for [`@octabits-io/flow`](../README.md). Each file is
+Runnable, focused examples for [`octaflow`](../README.md). Each file is
 self-contained with a `main()` and prints what it does.
 
 ## Running
 
-These are TypeScript files that import `@octabits-io/flow`. From a project that has the package
+These are TypeScript files that import `octaflow`. From a project that has the package
 installed (or from this repo after `pnpm build`):
 
 ```bash

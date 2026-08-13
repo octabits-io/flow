@@ -4,7 +4,7 @@ description: Install the package and only the peers the layers you import need.
 ---
 
 ```bash
-pnpm add @octabits-io/flow zod
+pnpm add octaflow zod
 ```
 
 `zod` is a **required** peer. The heavy dependencies are **optional peers** — install only
@@ -28,10 +28,10 @@ Each layer is a separate subpath export, so importing one never drags in another
 
 | Import | Layer | Heavy deps |
 |---|---|---|
-| `@octabits-io/flow` | **core** — engine, `defineStep`/`buildWorkflow`, store/dispatcher/gate interfaces, in-memory store, observability | none |
-| `@octabits-io/flow/store-pg` | **store-pg** — `WorkflowStore` + `StepGate` + event sink over Postgres, with DDL | `pg` |
-| `@octabits-io/flow/dispatcher-pgboss` | **dispatcher-pgboss** — `Dispatcher` + step/DLQ workers + cron scheduler over pg-boss | `pg-boss` |
-| `@octabits-io/flow/ai` | **ai** — instrumented model, cost, quota, `defineAiStep`, hooks factory | `ai`, `@ai-sdk/provider` |
+| `octaflow` | **core** — engine, `defineStep`/`buildWorkflow`, store/dispatcher/gate interfaces, in-memory store, observability | none |
+| `octaflow/store-pg` | **store-pg** — `WorkflowStore` + `StepGate` + event sink over Postgres, with DDL | `pg` |
+| `octaflow/dispatcher-pgboss` | **dispatcher-pgboss** — `Dispatcher` + step/DLQ workers + cron scheduler over pg-boss | `pg-boss` |
+| `octaflow/ai` | **ai** — instrumented model, cost, quota, `defineAiStep`, hooks factory | `ai`, `@ai-sdk/provider` |
 
 Enforced dependency tree (`scripts/check-boundaries.mjs`, part of `lint`):
 

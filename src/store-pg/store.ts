@@ -20,7 +20,7 @@ import { type SqlExecutor, poolExecutor } from './executor';
 
 // The executor seam (`SqlExecutor`, `SqlResult`, `poolExecutor`) moved to
 // `./executor` so the store, gate and event sink can share one seam. Re-exported
-// here for backward compatibility with `@octabits-io/flow/store-pg` consumers.
+// here for backward compatibility with `octaflow/store-pg` consumers.
 export { type SqlExecutor, type SqlResult, poolExecutor, toExecutor } from './executor';
 
 export interface PgWorkflowStoreDeps {

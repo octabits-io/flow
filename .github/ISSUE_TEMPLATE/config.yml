@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: Question or idea
-    url: https://github.com/octabits-io/flow/discussions
+    url: https://github.com/octabits-io/octaflow/discussions
     about: For usage questions and open-ended design discussion.

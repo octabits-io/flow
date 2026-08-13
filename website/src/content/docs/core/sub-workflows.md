@@ -13,4 +13,4 @@ const enrich = defineSubWorkflowStep({
 ```
 Starts the child workflow (same partition), suspends the parent step, and resumes it with the
 child's output when it terminates. A failed/cancelled child fails the parent step.
-→ [`examples/09-sub-workflows.ts`](https://github.com/octabits-io/flow/blob/main/examples/09-sub-workflows.ts)
+→ [`examples/09-sub-workflows.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/09-sub-workflows.ts)

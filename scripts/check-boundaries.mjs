@@ -3,7 +3,7 @@
  * Enforces the package's internal dependency tree. Run as part of `lint`.
  *
  * Layers live under src/<layer>/. The default entry (src/index.ts) re-exports
- * only `core`, so importing `@octabits-io/flow` never pulls in the AI SDK, pg,
+ * only `core`, so importing `octaflow` never pulls in the AI SDK, pg,
  * or pg-boss. These rules keep that guarantee true:
  *
  *   core               → depends on nothing internal; forbidden externals below

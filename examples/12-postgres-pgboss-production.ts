@@ -16,7 +16,7 @@ import {
   createStepHandlerRegistry,
   defineStep,
   buildWorkflow,
-} from '@octabits-io/flow';
+} from 'octaflow';
 import {
   createPgWorkflowStore,
   createPgStepGate,
@@ -26,14 +26,14 @@ import {
   FLOW_STORE_DDL,
   FLOW_GATE_DDL,
   FLOW_EVENT_DDL,
-} from '@octabits-io/flow/store-pg';
+} from 'octaflow/store-pg';
 import {
   createPgBossDispatcher,
   createPgBossStepWorker,
   createPgBossDlqWorker,
   createPgBossScheduler,
   createPgBossStartWorker,
-} from '@octabits-io/flow/dispatcher-pgboss';
+} from 'octaflow/dispatcher-pgboss';
 
 // --- A trivial workflow ---
 const inputSchema = z.object({ x: z.number() });

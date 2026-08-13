@@ -9,7 +9,7 @@
  * (The in-memory driver here runs the sleep immediately; a real pg-boss dispatcher waits.)
  */
 import { z } from 'zod';
-import { defineStep, defineSleepStep, buildWorkflow } from '@octabits-io/flow';
+import { defineStep, defineSleepStep, buildWorkflow } from 'octaflow';
 import { createInMemoryRuntime } from './runtime';
 
 const inputSchema = z.object({ email: z.string() });

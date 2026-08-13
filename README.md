@@ -1,10 +1,10 @@
-# @octabits-io/flow
+# octaflow
 
-[![CI](https://github.com/octabits-io/flow/actions/workflows/ci.yml/badge.svg)](https://github.com/octabits-io/flow/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@octabits-io/flow.svg)](https://www.npmjs.com/package/@octabits-io/flow)
-[![docs](https://img.shields.io/badge/docs-octabits--io.github.io%2Fflow-16794a.svg)](https://octabits-io.github.io/flow/)
-[![license](https://img.shields.io/npm/l/@octabits-io/flow.svg)](./LICENSE)
-[![types](https://img.shields.io/badge/types-included-blue.svg)](https://www.npmjs.com/package/@octabits-io/flow)
+[![CI](https://github.com/octabits-io/octaflow/actions/workflows/ci.yml/badge.svg)](https://github.com/octabits-io/octaflow/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/octaflow.svg)](https://www.npmjs.com/package/octaflow)
+[![docs](https://img.shields.io/badge/docs-octabits--io.github.io%2Fflow-16794a.svg)](https://octabits-io.github.io/octaflow/)
+[![license](https://img.shields.io/npm/l/octaflow.svg)](./LICENSE)
+[![types](https://img.shields.io/badge/types-included-blue.svg)](https://www.npmjs.com/package/octaflow)
 
 **Durable workflows for TypeScript that run on the Postgres you already have.**
 
@@ -13,12 +13,12 @@ complete, persists every transition, retries failures, and resumes after a crash
 no workflow server to operate, no control plane, and no vendor — it's a library you import,
 not a platform you adopt.
 
-### 📖 [Read the docs →](https://octabits-io.github.io/flow/)
+### 📖 [Read the docs →](https://octabits-io.github.io/octaflow/)
 
-[Quick start](https://octabits-io.github.io/flow/start/quick-start/) ·
-[Concepts](https://octabits-io.github.io/flow/core/concepts/) ·
-[Postgres & pg-boss](https://octabits-io.github.io/flow/running/postgres-and-pg-boss/) ·
-[API reference](https://octabits-io.github.io/flow/reference/api/)
+[Quick start](https://octabits-io.github.io/octaflow/start/quick-start/) ·
+[Concepts](https://octabits-io.github.io/octaflow/core/concepts/) ·
+[Postgres & pg-boss](https://octabits-io.github.io/octaflow/running/postgres-and-pg-boss/) ·
+[API reference](https://octabits-io.github.io/octaflow/reference/api/)
 
 ```ts
 const wf = buildWorkflow({
@@ -71,7 +71,7 @@ its completed steps roll back in reverse.
   <img src="./docs/demo.svg" alt="Terminal trace of a publishing pipeline: parallel fan-out over locales and images with a concurrency cap, a retried step, a sub-workflow, a suspend-and-resume on an external event, a durable sleep, then a saga rollback in reverse order" width="760">
 </p>
 
-Every line is an engine transition emitted through the [`FlowObserver`](https://octabits-io.github.io/flow/running/observability/) seam —
+Every line is an engine transition emitted through the [`FlowObserver`](https://octabits-io.github.io/octaflow/running/observability/) seam —
 the same one you'd point at OpenTelemetry or an events table — not a `console.log` in a handler.
 
 ```bash
@@ -118,12 +118,12 @@ that the others have earned.
 Reach for something else if:
 
 - **Your control flow is genuinely dynamic.** A declarative DAG is fixed at definition time.
-  Flow softens this with [`defineMapStep`](https://octabits-io.github.io/flow/core/fan-out-and-map/) (runtime-sized fan-out),
-  [sub-workflows](https://octabits-io.github.io/flow/core/sub-workflows/), and [`waitForEvent`](https://octabits-io.github.io/flow/core/signals/) — but if your
+  Flow softens this with [`defineMapStep`](https://octabits-io.github.io/octaflow/core/fan-out-and-map/) (runtime-sized fan-out),
+  [sub-workflows](https://octabits-io.github.io/octaflow/core/sub-workflows/), and [`waitForEvent`](https://octabits-io.github.io/octaflow/core/signals/) — but if your
   process is "loop until a human approves, branching on whatever they typed," an imperative
   durable function will express it more naturally.
 - **You want a UI out of the box.** Flow ships a wire-safe projection
-  ([`toPublicWorkflow`](https://octabits-io.github.io/flow/extending/http/)) and lifecycle events, not a
+  ([`toPublicWorkflow`](https://octabits-io.github.io/octaflow/extending/http/)) and lifecycle events, not a
   dashboard. You build it.
 - **You need non-TypeScript workers.** The DAG and its schemas are TypeScript values.
 - **You can't run Postgres**, or you need throughput past what a Postgres-backed queue gives you.
@@ -203,7 +203,7 @@ next to what your steps actually do.
 ## Installation
 
 ```bash
-pnpm add @octabits-io/flow zod
+pnpm add octaflow zod
 ```
 
 `zod` is a **required** peer. The heavy dependencies are **optional peers** — install only
@@ -230,21 +230,21 @@ pnpm add ai @ai-sdk/provider
 ## Documentation
 
 Full docs — concepts, every feature, production wiring and the API reference — live at
-**[octabits-io.github.io/flow](https://octabits-io.github.io/flow/)**.
+**[octabits-io.github.io/octaflow](https://octabits-io.github.io/octaflow/)**.
 
 | | |
 |---|---|
-| [Quick start](https://octabits-io.github.io/flow/start/quick-start/) | a runnable workflow in one file, no database |
-| [Concepts](https://octabits-io.github.io/flow/core/concepts/) | step, workflow, registry, store, dispatcher, engine, partition |
-| [Defining steps](https://octabits-io.github.io/flow/core/defining-steps/) | `defineStep` and its variants |
-| [Retry & timeout](https://octabits-io.github.io/flow/core/retry-and-timeout/) | attempt budgets, backoff, and how a failure is classified |
-| [Fan-out & map](https://octabits-io.github.io/flow/core/fan-out-and-map/) | one child step per item of a runtime list |
-| [Signals](https://octabits-io.github.io/flow/core/signals/) · [Sub-workflows](https://octabits-io.github.io/flow/core/sub-workflows/) · [Saga](https://octabits-io.github.io/flow/core/saga-compensation/) | suspend, nest, and roll back |
-| [Postgres & pg-boss](https://octabits-io.github.io/flow/running/postgres-and-pg-boss/) | production wiring, workers, DLQ, cron |
-| [Observability](https://octabits-io.github.io/flow/running/observability/) | lifecycle events and spans |
-| [The AI add-on](https://octabits-io.github.io/flow/extending/ai/) | token/cost capture, quota, usage rollups |
-| [Extending](https://octabits-io.github.io/flow/extending/interfaces/) | custom stores, dispatchers and gates |
-| [API reference](https://octabits-io.github.io/flow/reference/api/) | every export, by entry point |
+| [Quick start](https://octabits-io.github.io/octaflow/start/quick-start/) | a runnable workflow in one file, no database |
+| [Concepts](https://octabits-io.github.io/octaflow/core/concepts/) | step, workflow, registry, store, dispatcher, engine, partition |
+| [Defining steps](https://octabits-io.github.io/octaflow/core/defining-steps/) | `defineStep` and its variants |
+| [Retry & timeout](https://octabits-io.github.io/octaflow/core/retry-and-timeout/) | attempt budgets, backoff, and how a failure is classified |
+| [Fan-out & map](https://octabits-io.github.io/octaflow/core/fan-out-and-map/) | one child step per item of a runtime list |
+| [Signals](https://octabits-io.github.io/octaflow/core/signals/) · [Sub-workflows](https://octabits-io.github.io/octaflow/core/sub-workflows/) · [Saga](https://octabits-io.github.io/octaflow/core/saga-compensation/) | suspend, nest, and roll back |
+| [Postgres & pg-boss](https://octabits-io.github.io/octaflow/running/postgres-and-pg-boss/) | production wiring, workers, DLQ, cron |
+| [Observability](https://octabits-io.github.io/octaflow/running/observability/) | lifecycle events and spans |
+| [The AI add-on](https://octabits-io.github.io/octaflow/extending/ai/) | token/cost capture, quota, usage rollups |
+| [Extending](https://octabits-io.github.io/octaflow/extending/interfaces/) | custom stores, dispatchers and gates |
+| [API reference](https://octabits-io.github.io/octaflow/reference/api/) | every export, by entry point |
 
 ---
 
@@ -283,6 +283,6 @@ enforces, and the correctness requirements a custom `WorkflowStore` has to meet.
 
 ## Status
 
-Pre-1.0 — developed in [octabits-io/flow](https://github.com/octabits-io/flow) (extracted from the
+Pre-1.0 — developed in [octabits-io/octaflow](https://github.com/octabits-io/octaflow) (extracted from the
 [octabits platform monorepo](https://github.com/octabits-io/platform), where its earlier history lives).
 The API is stable but may still see breaking changes in 0.x minors.

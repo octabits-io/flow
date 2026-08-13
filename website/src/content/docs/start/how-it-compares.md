@@ -25,12 +25,12 @@ that the others have earned.
 Reach for something else if:
 
 - **Your control flow is genuinely dynamic.** A declarative DAG is fixed at definition time.
-  Flow softens this with [`defineMapStep`](/flow/core/fan-out-and-map/) (runtime-sized fan-out),
-  [sub-workflows](/flow/core/sub-workflows/), and [`waitForEvent`](/flow/core/signals/) — but if your
+  Flow softens this with [`defineMapStep`](/octaflow/core/fan-out-and-map/) (runtime-sized fan-out),
+  [sub-workflows](/octaflow/core/sub-workflows/), and [`waitForEvent`](/octaflow/core/signals/) — but if your
   process is "loop until a human approves, branching on whatever they typed," an imperative
   durable function will express it more naturally.
 - **You want a UI out of the box.** Flow ships a wire-safe projection
-  ([`toPublicWorkflow`](/flow/extending/http/)) and lifecycle events, not a
+  ([`toPublicWorkflow`](/octaflow/extending/http/)) and lifecycle events, not a
   dashboard. You build it.
 - **You need non-TypeScript workers.** The DAG and its schemas are TypeScript values.
 - **You can't run Postgres**, or you need throughput past what a Postgres-backed queue gives you.

@@ -39,8 +39,8 @@ import {
   defineSubWorkflowStep,
   buildWorkflow,
   retryableError,
-} from '@octabits-io/flow';
-import type { Dispatcher, DispatchStepPayload, FlowEvent, FlowObserver } from '@octabits-io/flow';
+} from 'octaflow';
+import type { Dispatcher, DispatchStepPayload, FlowEvent, FlowObserver } from 'octaflow';
 
 // ---------------------------------------------------------------------------
 // presentation

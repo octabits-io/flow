@@ -15,7 +15,7 @@ owns that boundary, and the matching Zod schemas slot straight into a route's
 `response` declaration (OpenAPI, response validation, typed clients):
 
 ```ts
-import { toPublicWorkflow, PUBLIC_WORKFLOW_SCHEMA } from '@octabits-io/flow';
+import { toPublicWorkflow, PUBLIC_WORKFLOW_SCHEMA } from 'octaflow';
 
 app.get('/workflows/:id', async ({ params }) => {
   const status = await engine.getWorkflowStatus(Number(params.id));

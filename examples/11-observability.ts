@@ -7,7 +7,7 @@
  * and an OpenTelemetry-backed tracer.
  */
 import { z } from 'zod';
-import { defineStep, buildWorkflow, createRecordingObserver, createRecordingTracer } from '@octabits-io/flow';
+import { defineStep, buildWorkflow, createRecordingObserver, createRecordingTracer } from 'octaflow';
 import { createInMemoryRuntime } from './runtime';
 
 const inputSchema = z.object({});

@@ -9,7 +9,7 @@
  * process; `createPgStepGate` (store-pg) for crash-safe, cross-process caps.
  */
 import { z } from 'zod';
-import { defineStep, buildWorkflow, createInMemoryStepGate } from '@octabits-io/flow';
+import { defineStep, buildWorkflow, createInMemoryStepGate } from 'octaflow';
 import { createInMemoryRuntime } from './runtime';
 
 const inputSchema = z.object({});

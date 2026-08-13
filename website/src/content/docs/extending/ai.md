@@ -3,12 +3,12 @@ title: The AI add-on
 description: Instrumented models, token and cost capture, quota enforcement and usage rollups.
 ---
 
-`@octabits-io/flow/ai` wires model instrumentation, token/cost capture, quota, and daily usage
+`octaflow/ai` wires model instrumentation, token/cost capture, quota, and daily usage
 rollups into the engine's lifecycle hooks — the core stays AI-free.
 
 ```ts
-import { createWorkflowEngine, createStepHandlerRegistry, createInMemoryWorkflowStore } from '@octabits-io/flow';
-import { defineAiStep, buildAiWorkflow, createAiWorkflowHooks } from '@octabits-io/flow/ai';
+import { createWorkflowEngine, createStepHandlerRegistry, createInMemoryWorkflowStore } from 'octaflow';
+import { defineAiStep, buildAiWorkflow, createAiWorkflowHooks } from 'octaflow/ai';
 
 const summarize = defineAiStep({
   type: 'summarize',
@@ -33,7 +33,7 @@ const engine = createWorkflowEngine({ store, dispatcher, registry, partitionKey:
 `ctx.context.model` is an **instrumented** model — token usage is captured automatically and the
 `onAfterStep` hook turns it into cost via a pluggable pricing table (`createCostEstimator`).
 `ctx.context.host` is whatever your `resolveHost` returns (a DI scope, domain services).
-→ [`examples/13-ai-workflow.ts`](https://github.com/octabits-io/flow/blob/main/examples/13-ai-workflow.ts)
+→ [`examples/13-ai-workflow.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/13-ai-workflow.ts)
 
 ## Quota enforcement & usage aggregation
 
@@ -44,7 +44,7 @@ database (and the `ai` layer never depends on `pg`). Scoping is generic (`partit
 `keySource` is a free-form string, so both engines stay tenancy-agnostic.
 
 ```ts
-import { createAiQuotaService, createAiUsageAggregationService, DEFAULT_AI_QUOTA } from '@octabits-io/flow/ai';
+import { createAiQuotaService, createAiUsageAggregationService, DEFAULT_AI_QUOTA } from 'octaflow/ai';
 
 // Quota: limits come from an injected getQuota(partitionKey) callback — return
 // null to exempt a scope entirely (e.g. bring-your-own-key), or null on any

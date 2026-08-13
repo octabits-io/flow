@@ -11,5 +11,5 @@ pnpm typecheck         # tsc --noEmit
 ```
 
 Write your own workflows against `createInMemoryWorkflowStore()` + an in-process dispatcher (see
-[`examples/runtime.ts`](https://github.com/octabits-io/flow/blob/main/examples/runtime.ts)) for fast, deterministic unit tests; use
+[`examples/runtime.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/runtime.ts)) for fast, deterministic unit tests; use
 `createRecordingObserver()` to assert the lifecycle.

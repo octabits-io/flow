@@ -16,7 +16,7 @@ import {
   buildWorkflow,
   type Dispatcher,
   type DispatchStepPayload,
-} from '@octabits-io/flow';
+} from 'octaflow';
 
 // 1. Define typed steps. A step's `dependencies` make its deps' outputs available as `ctx.deps`.
 const inputSchema = z.object({ name: z.string() });
@@ -67,4 +67,4 @@ if (status.ok) console.log(status.value.status, status.value.output);
 // → 'completed' { greet: { greeting: 'Hello, Ada' }, shout: { loud: 'HELLO, ADA!' } }
 ```
 
-See [`examples/01-in-memory-quickstart.ts`](https://github.com/octabits-io/flow/blob/main/examples/01-in-memory-quickstart.ts).
+See [`examples/01-in-memory-quickstart.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/01-in-memory-quickstart.ts).

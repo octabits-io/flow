@@ -9,7 +9,7 @@
  * on both, so it waits for the slower one (automatic fan-in). No scheduling code required.
  */
 import { z } from 'zod';
-import { defineStep, buildWorkflow } from '@octabits-io/flow';
+import { defineStep, buildWorkflow } from 'octaflow';
 import { createInMemoryRuntime } from './runtime';
 
 const inputSchema = z.object({ id: z.string() });

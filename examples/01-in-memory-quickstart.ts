@@ -12,8 +12,8 @@ import {
   createInMemoryWorkflowStore,
   defineStep,
   buildWorkflow,
-} from '@octabits-io/flow';
-import type { Dispatcher, DispatchStepPayload } from '@octabits-io/flow';
+} from 'octaflow';
+import type { Dispatcher, DispatchStepPayload } from 'octaflow';
 
 const inputSchema = z.object({ name: z.string() });
 

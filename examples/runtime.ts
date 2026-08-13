@@ -13,7 +13,7 @@ import {
   createWorkflowEngine,
   createStepHandlerRegistry,
   createInMemoryWorkflowStore,
-} from '@octabits-io/flow';
+} from 'octaflow';
 import type {
   Dispatcher,
   DispatchStepPayload,
@@ -21,7 +21,7 @@ import type {
   FlowObserver,
   FlowTracer,
   WorkflowHooks,
-} from '@octabits-io/flow';
+} from 'octaflow';
 
 export interface RuntimeOptions {
   partitionKey?: string;

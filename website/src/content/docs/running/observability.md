@@ -6,7 +6,7 @@ description: Lifecycle events and per-step spans, both pluggable.
 Two pluggable surfaces, both no-op by default.
 
 ```ts
-import { createRecordingObserver, createRecordingTracer } from '@octabits-io/flow';
+import { createRecordingObserver, createRecordingTracer } from 'octaflow';
 
 const observer = createRecordingObserver(); // captures FlowEvents in memory (tests/introspection)
 const tracer = createRecordingTracer();     // captures spans in memory
@@ -24,4 +24,4 @@ const engine = createWorkflowEngine({ store, dispatcher, registry, partitionKey,
   appends to `flow_step_event`; read a run's timeline back with `readFlowEvents(pool, { workflowId,
   partitionKey })`. A step that retried/transitioned is fully reconstructable after the fact.
 
-→ [`examples/11-observability.ts`](https://github.com/octabits-io/flow/blob/main/examples/11-observability.ts)
+→ [`examples/11-observability.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/11-observability.ts)

@@ -1,7 +1,7 @@
 /**
  * 13 — AI workflow add-on (instrumented model + token/cost capture)
  *
- * `@octabits-io/flow/ai` wires model instrumentation, token/cost capture, optional quota, and
+ * `octaflow/ai` wires model instrumentation, token/cost capture, optional quota, and
  * daily usage rollups into the engine's lifecycle hooks — the core stays AI-free. In an AI step,
  * `ctx.context.model` is an INSTRUMENTED `LanguageModelV4`: token usage is captured automatically
  * and turned into cost by a pluggable pricing table. `ctx.context.host` is whatever your
@@ -15,9 +15,9 @@ import {
   createWorkflowEngine,
   createStepHandlerRegistry,
   createInMemoryWorkflowStore,
-} from '@octabits-io/flow';
-import type { Dispatcher, DispatchStepPayload } from '@octabits-io/flow';
-import { defineAiStep, buildAiWorkflow, createAiWorkflowHooks } from '@octabits-io/flow/ai';
+} from 'octaflow';
+import type { Dispatcher, DispatchStepPayload } from 'octaflow';
+import { defineAiStep, buildAiWorkflow, createAiWorkflowHooks } from 'octaflow/ai';
 import type { LanguageModelV4 } from '@ai-sdk/provider';
 
 // Your host context (DI scope, services) — exposed to handlers as `ctx.context.host`.

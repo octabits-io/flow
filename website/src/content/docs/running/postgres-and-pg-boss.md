@@ -13,7 +13,7 @@ import PgBoss from 'pg-boss';
 import {
   createWorkflowEngine,
   createStepHandlerRegistry,
-} from '@octabits-io/flow';
+} from 'octaflow';
 import {
   createPgWorkflowStore,
   createPgStepGate,
@@ -22,12 +22,12 @@ import {
   FLOW_STORE_DDL,
   FLOW_GATE_DDL,
   FLOW_EVENT_DDL,
-} from '@octabits-io/flow/store-pg';
+} from 'octaflow/store-pg';
 import {
   createPgBossDispatcher,
   createPgBossStepWorker,
   createPgBossDlqWorker,
-} from '@octabits-io/flow/dispatcher-pgboss';
+} from 'octaflow/dispatcher-pgboss';
 
 const partitionKey = 'tenant-42';
 const queueName = 'flow-steps';
@@ -89,12 +89,12 @@ await myWorkflow.start(engine, { /* input */ });
 Multi-tenant: build **one engine + store + dispatcher per partition**, all sharing the same
 pool/boss. The step worker reads `payload.partitionKey` and routes to that partition's engine.
 
-See [`examples/12-postgres-pgboss-production.ts`](https://github.com/octabits-io/flow/blob/main/examples/12-postgres-pgboss-production.ts).
+See [`examples/12-postgres-pgboss-production.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/12-postgres-pgboss-production.ts).
 
 ## Cron / scheduled starts
 
 ```ts
-import { createPgBossScheduler, createPgBossStartWorker } from '@octabits-io/flow/dispatcher-pgboss';
+import { createPgBossScheduler, createPgBossStartWorker } from 'octaflow/dispatcher-pgboss';
 
 const scheduler = createPgBossScheduler({ boss, queueName: 'flow-starts', partitionKey });
 await scheduler.schedule({ key: 'nightly', cron: '0 3 * * *', workflowType: 'enrichment', input: { full: true } });

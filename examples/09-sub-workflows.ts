@@ -7,7 +7,7 @@
  * A failed/cancelled child fails the parent step (and cascades). Sub-workflows compose + nest.
  */
 import { z } from 'zod';
-import { defineStep, defineSubWorkflowStep, buildWorkflow } from '@octabits-io/flow';
+import { defineStep, defineSubWorkflowStep, buildWorkflow } from 'octaflow';
 import { createInMemoryRuntime } from './runtime';
 
 // --- Child workflow: takes { n } and triples it ---

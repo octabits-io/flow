@@ -1,9 +1,9 @@
 {
-  "name": "@octabits-io/flow-website",
+  "name": "octaflow-website",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@11.21.0",
-  "description": "Documentation site for @octabits-io/flow. Isolated from the library's dependency graph on purpose — nothing here is published.",
+  "description": "Documentation site for octaflow. Isolated from the library's dependency graph on purpose — nothing here is published.",
   "scripts": {
     "dev": "astro dev",
     "build": "astro build",

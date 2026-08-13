@@ -13,4 +13,4 @@ const engine = createWorkflowEngine({ store, dispatcher, registry, partitionKey,
 ```
 A gated step is admitted or deferred (re-enqueued) **without consuming a retry attempt**. Use
 `createPgStepGate` for cross-process caps (crash-safe leases + a token bucket in Postgres).
-→ [`examples/05-concurrency-rate-limit.ts`](https://github.com/octabits-io/flow/blob/main/examples/05-concurrency-rate-limit.ts)
+→ [`examples/05-concurrency-rate-limit.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/05-concurrency-rate-limit.ts)

@@ -9,7 +9,7 @@
  * Downstream steps read the map step's output as `{ items: TItemOutput[] }`.
  */
 import { z } from 'zod';
-import { defineStep, defineMapStep, buildWorkflow } from '@octabits-io/flow';
+import { defineStep, defineMapStep, buildWorkflow } from 'octaflow';
 import { createInMemoryRuntime } from './runtime';
 
 const inputSchema = z.object({});

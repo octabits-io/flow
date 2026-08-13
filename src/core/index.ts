@@ -1,5 +1,5 @@
 // ============================================================================
-// @octabits-io/flow (core layer) — generic durable DAG workflow engine
+// octaflow (core layer) — generic durable DAG workflow engine
 // ============================================================================
 
 export * from './result';

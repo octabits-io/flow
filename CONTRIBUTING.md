@@ -1,4 +1,4 @@
-# Contributing to `@octabits-io/flow`
+# Contributing to `octaflow`
 
 Thanks for taking a look. Bug reports with a runnable reproduction are the most
 useful thing you can send; PRs are welcome too.
@@ -49,7 +49,7 @@ One package, **four layers**, with the boundaries enforced by `pnpm lint`:
 | `./dispatcher-pgboss` | pg-boss dispatcher, workers, cron | `core` | `ai`/`@ai-sdk`, `pg` |
 
 `ai` and the two adapters may never depend on each other. The default `.` entry
-re-exports **only `core`**, so `import '@octabits-io/flow'` never pulls in the AI
+re-exports **only `core`**, so `import 'octaflow'` never pulls in the AI
 SDK, `pg`, or `pg-boss` — all of which are optional peers. Keep it that way: new
 capabilities that need a heavy dependency belong in a layer, behind an optional
 peer, not in core.

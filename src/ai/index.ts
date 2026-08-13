@@ -1,5 +1,5 @@
 // ============================================================================
-// @octabits-io/flow/ai — AI add-on for the flow core layer
+// octaflow/ai — AI add-on for the flow core layer
 // ============================================================================
 //
 // Adds, via core lifecycle hooks: transparent token-usage instrumentation,

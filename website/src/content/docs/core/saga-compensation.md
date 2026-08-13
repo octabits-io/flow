@@ -12,4 +12,4 @@ const reserve = defineStep({
 ```
 On workflow failure the engine runs each completed step's `compensate` in **reverse dependency
 order** (`compensating` → `compensated`). Best-effort: a throwing rollback is logged + surfaced,
-the rest still run. → [`examples/10-saga-compensation.ts`](https://github.com/octabits-io/flow/blob/main/examples/10-saga-compensation.ts)
+the rest still run. → [`examples/10-saga-compensation.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/10-saga-compensation.ts)

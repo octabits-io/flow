@@ -7,7 +7,7 @@
  * output (validated against `outputSchema`) and the DAG advances. Re-delivery is a safe no-op.
  */
 import { z } from 'zod';
-import { defineStep, defineWaitStep, buildWorkflow } from '@octabits-io/flow';
+import { defineStep, defineWaitStep, buildWorkflow } from 'octaflow';
 import { createInMemoryRuntime } from './runtime';
 
 const inputSchema = z.object({});

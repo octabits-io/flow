@@ -9,7 +9,7 @@
  * Non-retryable errors (a plain bug) fail immediately without burning the retry budget.
  */
 import { z } from 'zod';
-import { defineStep, buildWorkflow } from '@octabits-io/flow';
+import { defineStep, buildWorkflow } from 'octaflow';
 import { createInMemoryRuntime } from './runtime';
 
 const inputSchema = z.object({});

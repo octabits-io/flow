@@ -17,4 +17,4 @@ const resizeAll = defineMapStep({
 ```
 The engine spawns one child step per item (own retry/gate), suspends the parent as `mapping`, and
 completes it with the aggregated outputs. A failed item fails the whole map.
-→ [`examples/07-dynamic-map.ts`](https://github.com/octabits-io/flow/blob/main/examples/07-dynamic-map.ts)
+→ [`examples/07-dynamic-map.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/07-dynamic-map.ts)

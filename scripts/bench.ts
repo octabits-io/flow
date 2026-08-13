@@ -37,9 +37,9 @@ import {
   createStepHandlerRegistry,
   defineStep,
   buildWorkflow,
-} from '@octabits-io/flow';
-import type { Dispatcher, DispatchStepPayload } from '@octabits-io/flow';
-import { createPgWorkflowStore, applySchema, FLOW_STORE_DDL } from '@octabits-io/flow/store-pg';
+} from 'octaflow';
+import type { Dispatcher, DispatchStepPayload } from 'octaflow';
+import { createPgWorkflowStore, applySchema, FLOW_STORE_DDL } from 'octaflow/store-pg';
 
 // ---------------------------------------------------------------------------
 // config
@@ -177,7 +177,7 @@ async function suiteA(uri: string) {
 async function suiteB(uri: string) {
   const { PgBoss } = await import('pg-boss');
   const { createPgBossDispatcher, createPgBossStepWorker } = await import(
-    '@octabits-io/flow/dispatcher-pgboss'
+    'octaflow/dispatcher-pgboss'
   );
 
   console.log(c.b('\n  B. end-to-end through pg-boss workers\n'));
