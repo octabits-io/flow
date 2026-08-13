@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/octabits-io/flow/actions/workflows/ci.yml/badge.svg)](https://github.com/octabits-io/flow/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/@octabits-io/flow.svg)](https://www.npmjs.com/package/@octabits-io/flow)
+[![docs](https://img.shields.io/badge/docs-octabits--io.github.io%2Fflow-16794a.svg)](https://octabits-io.github.io/flow/)
 [![license](https://img.shields.io/npm/l/@octabits-io/flow.svg)](./LICENSE)
 [![types](https://img.shields.io/badge/types-included-blue.svg)](https://www.npmjs.com/package/@octabits-io/flow)
 
@@ -11,6 +12,13 @@ Declare a DAG of Zod-typed steps. The engine runs each step as soon as its depen
 complete, persists every transition, retries failures, and resumes after a crash. There is
 no workflow server to operate, no control plane, and no vendor — it's a library you import,
 not a platform you adopt.
+
+### 📖 [Read the docs →](https://octabits-io.github.io/flow/)
+
+[Quick start](https://octabits-io.github.io/flow/start/quick-start/) ·
+[Concepts](https://octabits-io.github.io/flow/core/concepts/) ·
+[Postgres & pg-boss](https://octabits-io.github.io/flow/running/postgres-and-pg-boss/) ·
+[API reference](https://octabits-io.github.io/flow/reference/api/)
 
 ```ts
 const wf = buildWorkflow({
