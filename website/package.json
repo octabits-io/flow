@@ -2,6 +2,7 @@
   "name": "@octabits-io/flow-website",
   "private": true,
   "type": "module",
+  "packageManager": "pnpm@11.21.0",
   "description": "Documentation site for @octabits-io/flow. Isolated from the library's dependency graph on purpose — nothing here is published.",
   "scripts": {
     "dev": "astro dev",
