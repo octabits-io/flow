@@ -37,3 +37,4 @@ add-on; they need a real database / model and are structured to copy into your a
 | 11 | [11-observability.ts](./11-observability.ts) | observer events + tracer spans |
 | 12 | [12-postgres-pgboss-production.ts](./12-postgres-pgboss-production.ts) | pg store + gate + event sink + pg-boss + cron |
 | 13 | [13-ai-workflow.ts](./13-ai-workflow.ts) | AI add-on (instrumented model + cost) |
+| 14 | [14-live-progress.ts](./14-live-progress.ts) | FlowObserver → SSE fan-out (build your own dashboard) |

@@ -68,6 +68,7 @@ export default defineConfig({
           items: [
             { label: 'Postgres & pg-boss', slug: 'running/postgres-and-pg-boss' },
             { label: 'Observability', slug: 'running/observability' },
+            { label: 'Live progress', slug: 'running/live-progress' },
             { label: 'Performance', slug: 'running/performance' },
             { label: 'Testing', slug: 'running/testing' },
           ],

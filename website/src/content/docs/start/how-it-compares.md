@@ -13,7 +13,7 @@ workflow is expressed**.
 | **Model** | declarative — a static DAG value | imperative workflow code | imperative step functions | imperative tasks | job queue; flows are **trees** |
 | **Fan-in / diamond deps** | yes | yes | yes | yes | no — a job can't be shared by two branches |
 | **Inspect before running** | yes — the DAG is a value | no — the graph is the execution trace | no | no | yes — the flow tree is data |
-| **Web dashboard** | **none** — build one on `toPublicWorkflow()` | yes | yes | yes | via third-party UIs |
+| **Web dashboard** | **none** — [build one](/octaflow/running/live-progress/) | yes | yes | yes | via third-party UIs |
 | **Languages** | TypeScript | polyglot SDKs | TS, Python, Go, Kotlin | TS | Node (+ ports) |
 | **Maturity** | **pre-1.0** | mature | mature | mature | mature, widely deployed |
 
@@ -31,7 +31,7 @@ Reach for something else if:
   durable function will express it more naturally.
 - **You want a UI out of the box.** Flow ships a wire-safe projection
   ([`toPublicWorkflow`](/octaflow/extending/http/)) and lifecycle events, not a
-  dashboard. You build it.
+  dashboard — see [Live progress](/octaflow/running/live-progress/) for the recipe.
 - **You need non-TypeScript workers.** The DAG and its schemas are TypeScript values.
 - **You can't run Postgres**, or you need throughput past what a Postgres-backed queue gives you.
 - **You need a support contract**, or an API frozen by a 1.0 promise. This is pre-1.0 and 0.x

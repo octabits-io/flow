@@ -104,7 +104,7 @@ workflow is expressed**.
 | **Model** | declarative — a static DAG value | imperative workflow code | imperative step functions | imperative tasks | job queue; flows are **trees** |
 | **Fan-in / diamond deps** | yes | yes | yes | yes | no — a job can't be shared by two branches |
 | **Inspect before running** | yes — the DAG is a value | no — the graph is the execution trace | no | no | yes — the flow tree is data |
-| **Web dashboard** | **none** — build one on `toPublicWorkflow()` | yes | yes | yes | via third-party UIs |
+| **Web dashboard** | **none** — [build one](https://octabits-io.github.io/octaflow/running/live-progress/) | yes | yes | yes | via third-party UIs |
 | **Languages** | TypeScript | polyglot SDKs | TS, Python, Go, Kotlin | TS | Node (+ ports) |
 | **Maturity** | **pre-1.0** | mature | mature | mature | mature, widely deployed |
 
