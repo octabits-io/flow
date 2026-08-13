@@ -1562,3 +1562,98 @@ describe('observability', () => {
     expect(tracer.spans[0]!.error).toContain('span boom');
   });
 });
+
+describe('atomic dispatch (capability negotiation)', () => {
+  const empty = z.object({});
+  const okOut = z.object({ ok: z.boolean() });
+
+  function singleStep(type: string) {
+    const step = defineStep<Record<string, never>, { ok: boolean }, Ctx>({
+      type, workflowInputSchema: empty, outputSchema: okOut, handler: async () => ({ ok: true }),
+    });
+    return buildWorkflow<Record<string, never>, Ctx>({ type: `wf-${type}`, inputSchema: empty, steps: { only: step } });
+  }
+
+  /** Wraps a store with a transaction capability, delegating to it (never to itself). */
+  function withTransaction(inner: ReturnType<typeof createInMemoryWorkflowStore>) {
+    let open = false;
+    const store = {
+      ...inner,
+      isOpen: () => open,
+      async runInTransaction<T>(fn: (scope: { store: typeof inner; handle: unknown }) => Promise<T>): Promise<T> {
+        open = true;
+        try {
+          return await fn({ store: inner, handle: { query: async () => ({ rows: [] }) } });
+        } finally {
+          open = false;
+        }
+      },
+    };
+    return store;
+  }
+
+  it('enqueues through the transaction when both halves are capable', async () => {
+    const inner = createInMemoryWorkflowStore();
+    const store = withTransaction(inner);
+    const registry = createStepHandlerRegistry<Ctx>();
+    const usedTransactionalPath: boolean[] = [];
+    const dispatcher: Dispatcher = {
+      async enqueueStep() { usedTransactionalPath.push(false); return { ok: true, value: undefined }; },
+      async enqueueStepIn() { usedTransactionalPath.push(store.isOpen()); return { ok: true, value: undefined }; },
+    };
+    const wf = singleStep('atomic:both');
+    const engine = createWorkflowEngine<Ctx>({ store, registry, dispatcher, partitionKey: 'test' });
+    wf.register(registry);
+
+    await wf.start(engine, {});
+    // enqueueStepIn was used, and the transaction was open while it ran.
+    expect(usedTransactionalPath).toEqual([true]);
+  });
+
+  it('surfaces an enqueue failure instead of stranding the workflow', async () => {
+    const store = withTransaction(createInMemoryWorkflowStore());
+    const registry = createStepHandlerRegistry<Ctx>();
+    const dispatcher: Dispatcher = {
+      async enqueueStep() { return { ok: true, value: undefined }; },
+      async enqueueStepIn() { throw new Error('queue unreachable'); },
+    };
+    const wf = singleStep('atomic:throws');
+    const engine = createWorkflowEngine<Ctx>({ store, registry, dispatcher, partitionKey: 'test' });
+    wf.register(registry);
+
+    // The throw propagates so the caller knows, rather than returning ok with a
+    // workflow nobody will ever run. (That the row is *rolled back* is proven
+    // against real Postgres — see store-pg's atomic-dispatch integration test.)
+    await expect(wf.start(engine, {})).rejects.toThrow('queue unreachable');
+  });
+
+  it('falls back to the plain path when only the dispatcher is capable', async () => {
+    const registry = createStepHandlerRegistry<Ctx>();
+    const seen: string[] = [];
+    const dispatcher: Dispatcher = {
+      async enqueueStep(p) { seen.push(`plain:${p.stepKey}`); return { ok: true, value: undefined }; },
+      async enqueueStepIn(_h, p) { seen.push(`tx:${p.stepKey}`); return { ok: true, value: undefined }; },
+    };
+    const wf = singleStep('atomic:fallback');
+    const engine = createWorkflowEngine<Ctx>({
+      store: createInMemoryWorkflowStore(), registry, dispatcher, partitionKey: 'test',
+    });
+    wf.register(registry);
+    await wf.start(engine, {});
+    expect(seen).toEqual(['plain:only']);
+  });
+
+  it('falls back to the plain path when only the store is capable', async () => {
+    const store = withTransaction(createInMemoryWorkflowStore());
+    const registry = createStepHandlerRegistry<Ctx>();
+    const seen: string[] = [];
+    const dispatcher: Dispatcher = {
+      async enqueueStep(p) { seen.push(`plain:${p.stepKey}`); return { ok: true, value: undefined }; },
+    };
+    const wf = singleStep('atomic:storeonly');
+    const engine = createWorkflowEngine<Ctx>({ store, registry, dispatcher, partitionKey: 'test' });
+    wf.register(registry);
+    await wf.start(engine, {});
+    expect(seen).toEqual(['plain:only']);
+  });
+});

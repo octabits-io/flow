@@ -85,6 +85,19 @@ export interface ListWorkflowsFilters {
 // ============================================================================
 
 /**
+ * A store bound to an open transaction, plus an opaque handle a capable
+ * {@link Dispatcher} can join so a job and the state change that produced it
+ * commit together. Core never inspects `handle` — it belongs to the adapter
+ * pair (e.g. store-pg hands dispatcher-pgboss its transaction-bound executor).
+ */
+export interface TransactionalScope {
+  /** A store whose writes go through the open transaction. */
+  store: WorkflowStore;
+  /** Opaque; pass to `Dispatcher.enqueueStepIn`. */
+  handle: unknown;
+}
+
+/**
  * Persistence boundary for the engine. Implementations are **partition-scoped at
  * construction** (e.g. bound to one tenant) — exactly like the engine — so methods
  * never take a partition key. The default adapter is Postgres/Drizzle.
@@ -95,6 +108,20 @@ export interface ListWorkflowsFilters {
  * are computed from `listSteps`.
  */
 export interface WorkflowStore {
+  /**
+   * **Optional capability.** Run `fn` inside one store transaction.
+   *
+   * When the dispatcher also implements `enqueueStepIn`, the engine uses both so
+   * that a state change and the dispatches it unlocks commit atomically —
+   * closing the window where a crash leaves a step `pending` with no job behind
+   * it. A store that cannot offer this simply omits it, and the engine falls
+   * back to writing then enqueueing.
+   *
+   * Implementations MUST run every operation on `scope.store` inside the same
+   * transaction, and MUST roll back if `fn` throws.
+   */
+  runInTransaction?<T>(fn: (scope: TransactionalScope) => Promise<T>): Promise<T>;
+
   /** Create the workflow + all step rows atomically (transactional). */
   createWorkflow(params: CreateWorkflowParams): Promise<CreatedWorkflow>;
 

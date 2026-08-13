@@ -1,7 +1,7 @@
 import type { Result } from './result';
 import type { Logger } from './logger';
 import { noopLogger } from './logger';
-import type { WorkflowStore } from './store';
+import type { WorkflowStore, TransactionalScope } from './store';
 import type { Dispatcher } from './dispatcher';
 import type { StepGate } from './gate';
 import type { WorkflowHooks } from './hooks';
@@ -149,6 +149,28 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   const stepExpirySeconds = deps.config?.stepExpirySeconds ?? 600;
   const stuckStepBufferSeconds = deps.config?.stuckStepBufferSeconds ?? 300;
   const defaultRetryable = deps.config?.defaultRetryable;
+  /**
+   * Both halves must opt in: the store has to offer a transaction and the
+   * dispatcher has to be able to enqueue inside it. When they do, a state change
+   * and the dispatches it unlocks commit atomically — there is no window in
+   * which a step is `pending` with no job behind it. When either cannot, the
+   * engine writes and then enqueues, exactly as before.
+   */
+  const atomicDispatch =
+    typeof store.runInTransaction === 'function' && typeof dispatcher.enqueueStepIn === 'function';
+
+  /**
+   * Run `fn` atomically when both halves support it, otherwise run it directly.
+   * `fn` receives the scope to write through — pass it to `dispatchReadyStep`.
+   *
+   * Only writes and enqueues belong in here. Anything that can run user code
+   * (saga compensation, hooks) must stay outside, or a rollback handler making a
+   * network call would hold a database transaction open while it does.
+   */
+  async function withDispatchScope<T>(fn: (scope?: TransactionalScope) => Promise<T>): Promise<T> {
+    if (!atomicDispatch) return fn(undefined);
+    return store.runInTransaction!((scope) => fn(scope));
+  }
 
   const nowIso = () => now().toISOString();
 
@@ -182,14 +204,27 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
    * and awaits `resumeStep`; everything else is enqueued (with any durable delay).
    * Returns whether the step was enqueued.
    */
-  async function dispatchReadyStep(workflowId: WorkflowId, stepId: StepId, stepKey: string, stepType: string): Promise<boolean> {
+  async function dispatchReadyStep(
+    workflowId: WorkflowId,
+    stepId: StepId,
+    stepKey: string,
+    stepType: string,
+    scope?: TransactionalScope,
+  ): Promise<boolean> {
+    const st = scope?.store ?? store;
     if (isWaitStep(stepType)) {
-      await store.markStepWaiting(stepId);
+      await st.markStepWaiting(stepId);
       logger.info('Step is waiting for an event', { workflowId, stepId, stepKey });
       emit({ type: 'step.waiting', workflowId, stepId, stepKey, stepType });
       return false;
     }
-    const result = await dispatcher.enqueueStep({ workflowId, stepId, stepKey, stepType }, readyStepDelay(stepType));
+    const payload = { workflowId, stepId, stepKey, stepType };
+    const delay = readyStepDelay(stepType);
+    // Inside a transaction the job is written through the same handle as the
+    // state change, so both commit or neither does.
+    const result = scope
+      ? await dispatcher.enqueueStepIn!(scope.handle, payload, delay)
+      : await dispatcher.enqueueStep(payload, delay);
     if (!result.ok) {
       logger.error('Failed to enqueue step', new Error(result.error.message), { workflowId, stepKey });
       return false;
@@ -290,7 +325,9 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
 
     const { steps } = definition;
 
-    const created = await store.createWorkflow({
+    const { created, enqueuedStepKeys } = await withDispatchScope(async (scope) => {
+      const st = scope?.store ?? store;
+      const created = await st.createWorkflow({
       type: definition.type,
       input,
       entityRef: options?.entityRef,
@@ -305,6 +342,21 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
         dependencies: s.dependencies ?? [],
         input: s.input ?? null,
       })),
+      });
+      if (created.alreadyExisted) return { created, enqueuedStepKeys: [] as string[] };
+
+      // Enqueue dependency-free roots (run immediately / in parallel). Inside the
+      // same transaction as the insert when the adapters allow it, so a queue
+      // failure rolls the workflow back rather than stranding it with no jobs.
+      const readySteps = steps.filter((s) => !s.dependencies || s.dependencies.length === 0);
+      const keys: string[] = [];
+      for (const readyStep of readySteps) {
+        const dbStep = created.steps.find((s) => s.key === readyStep.key);
+        if (!dbStep) continue;
+        const enqueued = await dispatchReadyStep(created.workflowId, dbStep.id, readyStep.key, readyStep.type, scope);
+        if (enqueued) keys.push(readyStep.key);
+      }
+      return { created, enqueuedStepKeys: keys };
     });
 
     const workflowId = created.workflowId;
@@ -315,17 +367,8 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       return { ok: true, value: { workflowId, totalSteps: created.steps.length, enqueuedSteps: [] } };
     }
 
+    // After commit: an observer should never see a workflow that rolled back.
     emit({ type: 'workflow.started', workflowId, workflowType: definition.type });
-
-    // Enqueue dependency-free roots (run immediately / in parallel)
-    const readySteps = steps.filter((s) => !s.dependencies || s.dependencies.length === 0);
-    const enqueuedStepKeys: string[] = [];
-    for (const readyStep of readySteps) {
-      const dbStep = created.steps.find((s) => s.key === readyStep.key);
-      if (!dbStep) continue;
-      const enqueued = await dispatchReadyStep(workflowId, dbStep.id, readyStep.key, readyStep.type);
-      if (enqueued) enqueuedStepKeys.push(readyStep.key);
-    }
 
     logger.info('Workflow started', { workflowId, type: definition.type, totalSteps: steps.length, enqueuedSteps: enqueuedStepKeys });
 
@@ -567,8 +610,13 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   // --------------------------------------------------------------------------
 
   async function onStepCompleted(workflowId: WorkflowId, stepId: StepId, output: Record<string, unknown>): Promise<void> {
-    await store.completeStep({ workflowId, stepId, output, completedAt: nowIso() });
-    await advanceAfterStepCompleted(workflowId, stepId, output);
+    // The completion and the dispatches it unlocks go in one transaction when the
+    // adapters support it — otherwise a crash between them strands the dependents.
+    const snapshot = await withDispatchScope(async (scope) => {
+      await (scope?.store ?? store).completeStep({ workflowId, stepId, output, completedAt: nowIso() });
+      return dispatchNewlyReady(workflowId, stepId, scope);
+    });
+    await finalizeAfterStepCompleted(workflowId, stepId, output, snapshot);
   }
 
   /**
@@ -578,7 +626,26 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
    * is already queued is harmless, because claiming it is atomic.
    */
   async function advanceAfterStepCompleted(workflowId: WorkflowId, stepId: StepId, output: Record<string, unknown>): Promise<void> {
-    const allSteps = await store.listSteps(workflowId);
+    const snapshot = await withDispatchScope((scope) => dispatchNewlyReady(workflowId, stepId, scope));
+    await finalizeAfterStepCompleted(workflowId, stepId, output, snapshot);
+  }
+
+  interface AdvanceSnapshot {
+    keyedSteps: StepRecord[];
+    newlyReadyCount: number;
+  }
+
+  /**
+   * Transactional half: read readiness and dispatch whatever just became ready.
+   * Contains only store writes and enqueues — never user code.
+   */
+  async function dispatchNewlyReady(
+    workflowId: WorkflowId,
+    stepId: StepId,
+    scope?: TransactionalScope,
+  ): Promise<AdvanceSnapshot> {
+    const st = scope?.store ?? store;
+    const allSteps = await st.listSteps(workflowId);
     // Map children are internal — only keyed DAG steps drive readiness/termination.
     const keyedSteps = allSteps.filter((s) => s.parentStepId == null);
     const completedKeys = new Set(keyedSteps.filter((s) => s.status === 'completed').map((s) => s.key));
@@ -590,9 +657,22 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     });
 
     for (const readyStep of newlyReady) {
-      await dispatchReadyStep(workflowId, readyStep.id, readyStep.key, readyStep.type);
+      await dispatchReadyStep(workflowId, readyStep.id, readyStep.key, readyStep.type, scope);
     }
+    return { keyedSteps, newlyReadyCount: newlyReady.length };
+  }
 
+  /**
+   * Non-transactional half: decide whether the workflow is now failed or done.
+   * Deliberately outside any transaction — the failure path runs saga
+   * compensation, i.e. user handlers that may do network I/O.
+   */
+  async function finalizeAfterStepCompleted(
+    workflowId: WorkflowId,
+    stepId: StepId,
+    output: Record<string, unknown>,
+    { keyedSteps, newlyReadyCount }: AdvanceSnapshot,
+  ): Promise<void> {
     // A sibling branch may have failed while this step was in flight — the
     // workflow can never complete, so route through the failure path (it
     // finalizes once every remaining step settles). Without this, a workflow
@@ -608,7 +688,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
 
     // All terminal (treat the just-completed step as completed even though listSteps may be stale)
     const allTerminal = keyedSteps.every((s) => s.id === stepId || s.status === 'completed' || s.status === 'skipped');
-    if (allTerminal && newlyReady.length === 0) {
+    if (allTerminal && newlyReadyCount === 0) {
       const aggregatedOutput: Record<string, unknown> = {};
       for (const s of keyedSteps) {
         if (s.status === 'completed' || s.id === stepId) {

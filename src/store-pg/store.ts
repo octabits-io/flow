@@ -15,6 +15,7 @@ import type {
   WorkflowStatus,
   StepStatus,
   WorkflowWithSteps,
+  TransactionalScope,
 } from '../core';
 import { type SqlExecutor, poolExecutor } from './executor';
 
@@ -412,7 +413,24 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
     return res.rows.map(mapStep);
   }
 
+  /**
+   * Optional transaction capability (see `WorkflowStore.runInTransaction`). Hands
+   * back a store bound to the open transaction plus the transaction-bound
+   * executor as the opaque handle — `createPgBossDispatcher` knows how to enqueue
+   * through it, so a job and the state change that produced it commit together.
+   *
+   * Recursing is not supported (adapters never nest transactions); a nested call
+   * would reuse the same connection via `poolExecutor`, so it is simply the same
+   * transaction rather than a new one.
+   */
+  async function runInTransaction<T>(fn: (scope: TransactionalScope) => Promise<T>): Promise<T> {
+    return exec.transaction((tx) =>
+      fn({ store: createWorkflowStore({ ...deps, exec: tx }), handle: tx }),
+    );
+  }
+
   return {
+    runInTransaction,
     createWorkflow,
     getWorkflow,
     getStep,

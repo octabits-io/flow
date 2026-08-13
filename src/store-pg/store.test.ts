@@ -445,3 +445,64 @@ describe('createPgWorkflowStore (integration)', () => {
     expect(byStatusType.length).toBeGreaterThan(0);
   });
 });
+
+describe('atomic dispatch (real transaction)', () => {
+  const empty = z.object({});
+  const okOut = z.object({ ok: z.boolean() });
+
+  it('rolls the workflow back when the transactional enqueue fails', async () => {
+    const partitionKey = 'atomic-rollback';
+    const store = createPgWorkflowStore({ pool, partitionKey });
+    const registry = createStepHandlerRegistry<Ctx>();
+
+    // Capable of joining a transaction, but the queue is down.
+    const dispatcher: Dispatcher = {
+      async enqueueStep() { return { ok: true, value: undefined }; },
+      async enqueueStepIn() { throw new Error('queue unreachable'); },
+    };
+
+    const a = defineStep<Record<string, never>, { ok: boolean }, Ctx>({
+      type: 'atomic:a', workflowInputSchema: empty, outputSchema: okOut, handler: async () => ({ ok: true }),
+    });
+    const wf = buildWorkflow<Record<string, never>, Ctx>({ type: 'pg-atomic', inputSchema: empty, steps: { a } });
+    const engine = createWorkflowEngine<Ctx>({ store, registry, dispatcher, partitionKey });
+    wf.register(registry);
+
+    await expect(wf.start(engine, {})).rejects.toThrow('queue unreachable');
+
+    // Without the shared transaction the row would be committed with no job
+    // behind it — a workflow that can never run and never reports a problem.
+    const rows = await pool.query(
+      `SELECT count(*)::int AS n FROM flow_workflow WHERE partition_key = $1`, [partitionKey],
+    );
+    expect(rows.rows[0].n).toBe(0);
+  });
+
+  it('commits the workflow and its job together on the happy path', async () => {
+    const partitionKey = 'atomic-commit';
+    const store = createPgWorkflowStore({ pool, partitionKey });
+    const registry = createStepHandlerRegistry<Ctx>();
+    const handles: unknown[] = [];
+    const dispatcher: Dispatcher = {
+      async enqueueStep() { return { ok: true, value: undefined }; },
+      async enqueueStepIn(handle) { handles.push(handle); return { ok: true, value: undefined }; },
+    };
+    const a = defineStep<Record<string, never>, { ok: boolean }, Ctx>({
+      type: 'atomic:b', workflowInputSchema: empty, outputSchema: okOut, handler: async () => ({ ok: true }),
+    });
+    const wf = buildWorkflow<Record<string, never>, Ctx>({ type: 'pg-atomic-ok', inputSchema: empty, steps: { a } });
+    const engine = createWorkflowEngine<Ctx>({ store, registry, dispatcher, partitionKey });
+    wf.register(registry);
+
+    const started = await wf.start(engine, {});
+    expect(started.ok).toBe(true);
+    // The handle handed to the dispatcher is the transaction-bound executor.
+    expect(handles).toHaveLength(1);
+    expect(typeof (handles[0] as { query?: unknown }).query).toBe('function');
+
+    const rows = await pool.query(
+      `SELECT count(*)::int AS n FROM flow_workflow WHERE partition_key = $1`, [partitionKey],
+    );
+    expect(rows.rows[0].n).toBe(1);
+  });
+});

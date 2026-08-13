@@ -24,4 +24,20 @@ export interface EnqueueOptions {
  */
 export interface Dispatcher {
   enqueueStep(payload: DispatchStepPayload, options?: EnqueueOptions): Promise<Result<void, FlowErrorShape>>;
+
+  /**
+   * **Optional capability.** Enqueue inside the caller's store transaction, so
+   * the job and the state change that produced it commit together.
+   *
+   * `handle` comes from `WorkflowStore.runInTransaction` and is opaque to the
+   * engine — the store and dispatcher agree on its meaning. Implement this only
+   * when the queue lives in the same database as the store (pg-boss on the same
+   * Postgres does; SQS or a separate Redis cannot). Without it the engine writes
+   * state and then enqueues, which is at-least-once with a crash window.
+   */
+  enqueueStepIn?(
+    handle: unknown,
+    payload: DispatchStepPayload,
+    options?: EnqueueOptions,
+  ): Promise<Result<void, FlowErrorShape>>;
 }

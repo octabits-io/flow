@@ -54,33 +54,62 @@ export function createPgBossDispatcher(deps: PgBossDispatcherDeps): Dispatcher {
   const cfg = { ...DEFAULT_STEP_QUEUE_CONFIG, ...deps.config };
   let ensured = false;
 
-  return {
-    async enqueueStep(payload: DispatchStepPayload, options?: EnqueueOptions): Promise<Result<void, FlowErrorShape>> {
-      try {
-        const wire: WireStepPayload = { partitionKey, ...payload };
-        const parsed = WIRE_STEP_PAYLOAD_SCHEMA.safeParse(wire);
-        if (!parsed.success) {
-          return { ok: false, error: { key: 'queue_error', message: `Invalid step payload: ${parsed.error.message}` } };
-        }
-        if (!ensured) {
-          await ensureStepQueue(boss, queueName, cfg);
-          ensured = true;
-        }
-        const startAfter = options?.startAfterSeconds;
-        const jobId = await boss.send(queueName, parsed.data, {
-          retryLimit: cfg.retryLimit,
-          retryDelay: cfg.retryDelay,
-          expireInSeconds: cfg.expireInSeconds,
-          ...(startAfter != null && startAfter > 0 ? { startAfter } : {}),
-        });
-        if (!jobId) {
-          return { ok: false, error: { key: 'queue_error', message: `Failed to enqueue job to ${queueName}` } };
-        }
-        return { ok: true, value: undefined };
-      } catch (error) {
-        return { ok: false, error: { key: 'queue_error', message: error instanceof Error ? error.message : 'Unknown enqueue error' } };
+  /**
+   * Adapt flow's `SqlExecutor` to the shape pg-boss wants for a caller-supplied
+   * connection. The two are the same idea under different names.
+   */
+  function asPgBossDb(handle: unknown): { executeSql(text: string, values?: unknown[]): Promise<{ rows: unknown[] }> } | undefined {
+    const exec = handle as { query?: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> } | undefined;
+    if (!exec || typeof exec.query !== 'function') return undefined;
+    return { executeSql: (text, values) => exec.query!(text, values) };
+  }
+
+  async function send(
+    payload: DispatchStepPayload,
+    options?: EnqueueOptions,
+    handle?: unknown,
+  ): Promise<Result<void, FlowErrorShape>> {
+    try {
+      const wire: WireStepPayload = { partitionKey, ...payload };
+      const parsed = WIRE_STEP_PAYLOAD_SCHEMA.safeParse(wire);
+      if (!parsed.success) {
+        return { ok: false, error: { key: 'queue_error', message: `Invalid step payload: ${parsed.error.message}` } };
       }
-    },
+      if (!ensured) {
+        // Queue creation is DDL — never inside the caller's transaction, where a
+        // rollback would undo it and a lock could outlive the send.
+        await ensureStepQueue(boss, queueName, cfg);
+        ensured = true;
+      }
+      const startAfter = options?.startAfterSeconds;
+      const db = handle === undefined ? undefined : asPgBossDb(handle);
+      if (handle !== undefined && !db) {
+        return { ok: false, error: { key: 'queue_error', message: 'Transaction handle is not a SqlExecutor — is the store store-pg?' } };
+      }
+      const jobId = await boss.send(queueName, parsed.data, {
+        retryLimit: cfg.retryLimit,
+        retryDelay: cfg.retryDelay,
+        expireInSeconds: cfg.expireInSeconds,
+        ...(startAfter != null && startAfter > 0 ? { startAfter } : {}),
+        ...(db ? { db } : {}),
+      });
+      if (!jobId) {
+        return { ok: false, error: { key: 'queue_error', message: `Failed to enqueue job to ${queueName}` } };
+      }
+      return { ok: true, value: undefined };
+    } catch (error) {
+      return { ok: false, error: { key: 'queue_error', message: error instanceof Error ? error.message : 'Unknown enqueue error' } };
+    }
+  }
+
+  return {
+    enqueueStep: (payload, options) => send(payload, options),
+    /**
+     * Enqueue on the store's open transaction, so the job and the state change
+     * that produced it commit together. `handle` is the transaction-bound
+     * `SqlExecutor` that `createWorkflowStore.runInTransaction` hands out.
+     */
+    enqueueStepIn: (handle, payload, options) => send(payload, options, handle),
   };
 }
 

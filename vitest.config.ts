@@ -21,7 +21,12 @@ export default defineConfig({
         // Adapters: real Postgres / pg-boss via testcontainers (Docker required).
         test: {
           name: 'integration',
-          include: ['src/store-pg/**/*.{test,spec}.ts', 'src/dispatcher-pgboss/**/*.{test,spec}.ts'],
+          include: [
+            'src/store-pg/**/*.{test,spec}.ts',
+            'src/dispatcher-pgboss/**/*.{test,spec}.ts',
+            // Cross-adapter composition tests live outside src/ — see the file header.
+            'tests/**/*.integration.test.ts',
+          ],
           // `*.unit.test.ts` are mock-backed and run in the fast lane instead.
           exclude: ['src/**/*.unit.test.ts'],
           environment: 'node',
