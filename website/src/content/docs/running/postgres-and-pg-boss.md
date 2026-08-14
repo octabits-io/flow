@@ -9,7 +9,7 @@ The durable setup swaps the in-memory store for Postgres and the in-process queu
 
 ```ts
 import { Pool } from 'pg';
-import PgBoss from 'pg-boss';
+import { PgBoss } from 'pg-boss';
 import {
   createWorkflowEngine,
   createStepHandlerRegistry,
@@ -91,18 +91,88 @@ pool/boss. The step worker reads `payload.partitionKey` and routes to that parti
 
 See [`examples/12-postgres-pgboss-production.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/12-postgres-pgboss-production.ts).
 
+## Queue configuration
+
+`createPgBossDispatcher` and `ensureStepQueue` take a `StepQueueConfig` that sets up the queue
+and its dead-letter queue:
+
+| Field | Default | |
+|---|---|---|
+| `retryLimit` | `2` | Job-level retries before dead-lettering — **separate** from a step's own [`retry` policy](/octaflow/core/retry-and-timeout/#the-other-retry-layer) |
+| `retryDelay` | `30` | Seconds between those retries |
+| `expireInSeconds` | `600` | How long an in-flight job may occupy a worker |
+
+:::danger[`expireInSeconds` and `stepExpirySeconds` must agree]
+The engine keeps its own copy of the job expiry to compute the
+[stuck-step threshold](/octaflow/running/cancellation-and-recovery/#the-stuck-threshold). It is
+not read from pg-boss — change one and you must change the other:
+
+```ts
+const dispatcher = createPgBossDispatcher({ boss, queueName, partitionKey,
+  config: { expireInSeconds: 900 } });
+const engine = createWorkflowEngine({ …, config: { stepExpirySeconds: 900 } });
+```
+:::
+
+## Don't forget the sweeper
+
+Nothing in this wiring recovers a step whose worker died mid-run. Run
+[`engine.recoverStuckWorkflows()`](/octaflow/running/cancellation-and-recovery/) on a timer in
+one process — without it, a crashed step sits in `running` forever and its workflow never
+finishes.
+
+## Transactional dispatch, for free
+
+With `store-pg` and `dispatcher-pgboss` on the **same** Postgres, the engine detects both
+optional capabilities and commits each state change together with the jobs it unlocks —
+closing the crash window that would otherwise strand steps `pending` with no job behind them.
+No configuration; it is on whenever the pair is used together. See
+[transactional dispatch](/octaflow/extending/interfaces/#transactional-dispatch).
+
+This is one reason to point `PgBoss` and `Pool` at the same database rather than separate ones.
+
 ## Cron / scheduled starts
 
 ```ts
 import { createPgBossScheduler, createPgBossStartWorker } from 'octaflow/dispatcher-pgboss';
 
 const scheduler = createPgBossScheduler({ boss, queueName: 'flow-starts', partitionKey });
-await scheduler.schedule({ key: 'nightly', cron: '0 3 * * *', workflowType: 'enrichment', input: { full: true } });
+await scheduler.schedule({
+  key: 'nightly',              // unique per queue; re-scheduling the same key replaces it
+  cron: '0 3 * * *',
+  workflowType: 'enrichment',
+  input: { full: true },
+  idempotencyKeyPrefix: 'nightly',  // per-tick dedup — see below
+  tz: 'Europe/Berlin',         // optional IANA zone, default UTC
+});
+// await scheduler.unschedule('nightly');
 
 // A start worker turns each cron tick into a workflow start (host maps type → definition).
 const starter = createPgBossStartWorker({ boss, queueName: 'flow-starts' });
-await starter.start(async (payload) => {
-  const wf = workflowsByType[payload.workflowType];
-  await engine.startWorkflow(wf.definition, payload.input ?? {}, { idempotencyKey: payload.idempotencyKey });
+await starter.start(async (job) => {
+  const wf = workflowsByType[job.workflowType];
+  await engine.startWorkflow(wf.definition, job.input, { idempotencyKey: job.idempotencyKey });
 });
 ```
+
+### Cron idempotency
+
+A schedule stores its payload **once**, and pg-boss redelivers that same payload on every tick.
+So a key fixed at schedule time can't distinguish "this tick, redelivered" from "the next tick"
+— and since [start keys never expire](/octaflow/core/idempotency/#scope-and-lifetime), a fixed
+key would collapse every future tick into the first workflow.
+
+The start worker therefore resolves the key **per delivery**:
+
+| On the schedule | The worker hands the processor | Effect |
+|---|---|---|
+| `idempotencyKeyPrefix: 'nightly'` | `nightly:<jobId>` | one workflow **per tick**; a redelivered tick is deduped |
+| `idempotencyKey: 'backfill-2026'` | `backfill-2026` | one workflow **ever** — every later tick returns the first |
+| neither | `undefined` | no dedup; every delivery starts a workflow |
+
+`idempotencyKeyPrefix` is what you want on a recurring schedule. The job id is unique per cron
+tick and stable across that job's retries, which is exactly the identity dedup needs. Reach for
+the verbatim `idempotencyKey` only when "run this once and never again" is genuinely the intent
+(an explicit key wins if you somehow set both).
+
+The processor also receives `job.jobId` if you'd rather build the key yourself.

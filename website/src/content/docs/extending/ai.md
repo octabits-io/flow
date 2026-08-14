@@ -7,6 +7,8 @@ description: Instrumented models, token and cost capture, quota enforcement and 
 rollups into the engine's lifecycle hooks — the core stays AI-free.
 
 ```ts
+import { z } from 'zod';
+import { generateText } from 'ai';
 import { createWorkflowEngine, createStepHandlerRegistry, createInMemoryWorkflowStore } from 'octaflow';
 import { defineAiStep, buildAiWorkflow, createAiWorkflowHooks } from 'octaflow/ai';
 
@@ -22,17 +24,25 @@ const summarize = defineAiStep({
 });
 
 const hooks = createAiWorkflowHooks({
-  modelResolver: { resolveModel: () => myModel },                 // your LanguageModelV4
+  modelResolver: {
+    resolveModel: () => myModel,          // your LanguageModelV4
+    // resolveHost: (args) => container.scope(args),   // optional → ctx.context.host
+    // resolveKeySource: () => 'platform',             // optional → stamped on workflow metadata
+  },
   usageRecorder: { recordStepUsage: async () => {}, incrementWorkflowUsage: async () => {} },
   // quotaPolicy: { checkQuota: async () => ({ ok: true, value: undefined }) },
+  // costEstimator: createCostEstimator({ … }),        // defaults to DEFAULT_MODEL_PRICING
 });
 
+const store = createInMemoryWorkflowStore();
+const registry = createStepHandlerRegistry();
 const engine = createWorkflowEngine({ store, dispatcher, registry, partitionKey: 'tenant-1', hooks });
 ```
 
 `ctx.context.model` is an **instrumented** model — token usage is captured automatically and the
 `onAfterStep` hook turns it into cost via a pluggable pricing table (`createCostEstimator`).
-`ctx.context.host` is whatever your `resolveHost` returns (a DI scope, domain services).
+`ctx.context.host` is whatever `modelResolver.resolveHost` returns (a DI scope, domain
+services), or `undefined` if you don't supply one.
 → [`examples/13-ai-workflow.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/13-ai-workflow.ts)
 
 ## Quota enforcement & usage aggregation

@@ -151,6 +151,11 @@ const engine = createWorkflowEngine({
 });
 ```
 
-On reconnect the client replays from its last-seen timestamp with `readFlowEvents()`,
-then switches to the stream. Same envelope on both paths, so the client needs one
-renderer rather than two.
+On reconnect the client asks for the workflow's history, then switches to the stream.
+Same `FlowEvent` envelope on both paths, so the client needs one renderer rather than two.
+
+Note the shape of the read side: `readFlowEvents(pool, { workflowId, partitionKey })`
+returns **one workflow's complete timeline**, in insertion order. There is no `since`
+filter and no way to ask for "everything in the partition" — so the catch-up is
+per-workflow, and dropping events the client already saw is the client's job (compare
+against its last-seen `at`, or just re-render idempotently from the full history).

@@ -9,7 +9,7 @@
  * Needs a running Postgres (DATABASE_URL). Requires the optional peers: `pg`, `pg-boss`.
  */
 import { Pool } from 'pg';
-import PgBoss from 'pg-boss';
+import { PgBoss } from 'pg-boss';
 import { z } from 'zod';
 import {
   createWorkflowEngine,
@@ -83,14 +83,23 @@ async function main() {
   });
 
   // 5. (Optional) cron — start a workflow on a schedule. A start worker turns each tick into a start.
+  // `idempotencyKeyPrefix` (not `idempotencyKey`) is what you want on a schedule: the worker
+  // resolves it to `nightly:<jobId>`, so a redelivered tick is deduped while the NEXT tick
+  // still starts a fresh workflow. A verbatim key would collapse every future tick into the first.
   const scheduler = createPgBossScheduler({ boss, queueName: startQueue, partitionKey });
-  await scheduler.schedule({ key: 'nightly', cron: '0 3 * * *', workflowType: wf.type, input: { x: 21 } });
+  await scheduler.schedule({
+    key: 'nightly',
+    cron: '0 3 * * *',
+    workflowType: wf.type,
+    input: { x: 21 },
+    idempotencyKeyPrefix: 'nightly',
+  });
 
   const starter = createPgBossStartWorker({ boss, queueName: startQueue });
-  await starter.start(async (payload) => {
-    const target = workflowsByType[payload.workflowType];
+  await starter.start(async (job) => {
+    const target = workflowsByType[job.workflowType];
     if (!target) return;
-    await engine.startWorkflow(target.definition, payload.input ?? {}, { idempotencyKey: payload.idempotencyKey });
+    await engine.startWorkflow(target.definition, job.input ?? {}, { idempotencyKey: job.idempotencyKey });
   });
 
   // 6. Start work now — the worker drives it; poll for completion.

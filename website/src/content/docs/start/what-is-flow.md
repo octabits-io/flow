@@ -6,7 +6,8 @@ description: A declarative DAG workflow engine for TypeScript — the design cho
 **Durable workflows for TypeScript that run on the Postgres you already have.**
 
 Declare a DAG of Zod-typed steps. The engine runs each step as soon as its dependencies
-complete, persists every transition, retries failures, and resumes after a crash. There is
+complete, persists every transition, retries failures, and picks up where it left off after a
+restart. There is
 no workflow server to operate, no control plane, and no vendor — it's a library you import,
 not a platform you adopt.
 

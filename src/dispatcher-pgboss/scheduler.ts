@@ -1,6 +1,6 @@
 import type { PgBoss, Job, WorkOptions } from 'pg-boss';
 import type { Logger } from '../core';
-import { WIRE_START_PAYLOAD_SCHEMA, type WireStartPayload } from './payload';
+import { WIRE_START_PAYLOAD_SCHEMA, resolveStartIdempotencyKey, type WireStartPayload, type StartJobContext } from './payload';
 
 // ============================================================================
 // Cron / scheduled workflow starts
@@ -40,7 +40,20 @@ export interface ScheduleStartInput {
   workflowType: string;
   input?: Record<string, unknown>;
   entityRef?: string;
-  /** Forwarded to the start so overlapping ticks don't double-start. */
+  /**
+   * Per-tick start idempotency. The start worker resolves this to
+   * `${idempotencyKeyPrefix}:${jobId}`, so each cron tick gets a distinct key while a
+   * redelivery of the same tick reuses it — the usual thing you want on a schedule.
+   */
+  idempotencyKeyPrefix?: string;
+  /**
+   * Verbatim start idempotency key.
+   *
+   * A schedule stores its payload **once**, so this same key rides every tick — and
+   * start keys never expire. On a cron schedule that means **exactly one workflow,
+   * ever**; every later tick returns the first one. That is occasionally what you
+   * want ("run this once and never again"); if it isn't, use `idempotencyKeyPrefix`.
+   */
   idempotencyKey?: string;
   /** Optional IANA time zone (default UTC). */
   tz?: string;
@@ -68,6 +81,7 @@ export function createPgBossScheduler(deps: PgBossSchedulerDeps) {
         input: input.input ?? {},
         entityRef: input.entityRef,
         idempotencyKey: input.idempotencyKey,
+        idempotencyKeyPrefix: input.idempotencyKeyPrefix,
       };
       await boss.schedule(queueName, input.cron, payload, {
         key: input.key,
@@ -93,8 +107,20 @@ export function createPgBossScheduler(deps: PgBossSchedulerDeps) {
 // Start worker
 // ============================================================================
 
-/** Invoked for each start job — typically resolves the type and calls `engine.startWorkflow`. */
-export type StartJobProcessor = (payload: WireStartPayload) => Promise<void>;
+/**
+ * Invoked for each start job — typically resolves the type and calls `engine.startWorkflow`.
+ *
+ * The context's `idempotencyKey` is already resolved for **this delivery** (see
+ * {@link resolveStartIdempotencyKey}), so forwarding it is the right default:
+ *
+ * ```ts
+ * await starter.start(async (job) => {
+ *   const wf = workflowsByType[job.workflowType];
+ *   await engine.startWorkflow(wf.definition, job.input, { idempotencyKey: job.idempotencyKey });
+ * });
+ * ```
+ */
+export type StartJobProcessor = (payload: StartJobContext) => Promise<void>;
 
 export interface PgBossStartWorkerDeps {
   boss: PgBoss;
@@ -121,7 +147,14 @@ export function createPgBossStartWorker(deps: PgBossStartWorkerDeps) {
           logger?.error('Invalid start payload', undefined, { jobId: job.id });
           continue;
         }
-        await process(parsed.data);
+        // Resolve idempotency per delivery: a schedule's payload is stored once and
+        // redelivered on every tick, so a key baked in at schedule time would collapse
+        // every future tick into the first workflow.
+        await process({
+          ...parsed.data,
+          jobId: job.id,
+          idempotencyKey: resolveStartIdempotencyKey(parsed.data, job.id),
+        });
       }
     });
   }

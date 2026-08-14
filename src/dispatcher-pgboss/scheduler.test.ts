@@ -90,6 +90,49 @@ describe('pg-boss scheduler (integration)', () => {
     await worker.stop();
   });
 
+  it('resolves a per-tick idempotency key, so two ticks do not collapse into one workflow', async () => {
+    const queueName = 'flow-starts-pertick';
+    const seen: (string | undefined)[] = [];
+
+    const worker = createPgBossStartWorker({ boss, queueName, workerOptions: { pollingIntervalSeconds: 1 } });
+    await worker.start(async (job) => {
+      seen.push(job.idempotencyKey);
+    });
+
+    await ensureStartQueue(boss, queueName);
+    // Two cron ticks deliver the SAME stored payload — the one a schedule holds.
+    const stored = { partitionKey: 't', workflowType: 'enrichment', input: {}, idempotencyKeyPrefix: 'nightly' };
+    await boss.send(queueName, stored);
+    await boss.send(queueName, stored);
+
+    await waitFor(() => seen.length === 2);
+    expect(seen[0]).toMatch(/^nightly:/);
+    expect(seen[1]).toMatch(/^nightly:/);
+    expect(seen[0]).not.toBe(seen[1]); // distinct per tick — the whole point
+
+    await worker.stop();
+  });
+
+  it('passes an explicit idempotencyKey through verbatim on every tick', async () => {
+    const queueName = 'flow-starts-verbatim';
+    const seen: (string | undefined)[] = [];
+
+    const worker = createPgBossStartWorker({ boss, queueName, workerOptions: { pollingIntervalSeconds: 1 } });
+    await worker.start(async (job) => {
+      seen.push(job.idempotencyKey);
+    });
+
+    await ensureStartQueue(boss, queueName);
+    const stored = { partitionKey: 't', workflowType: 'backfill', input: {}, idempotencyKey: 'once-ever' };
+    await boss.send(queueName, stored);
+    await boss.send(queueName, stored);
+
+    await waitFor(() => seen.length === 2);
+    expect(seen).toEqual(['once-ever', 'once-ever']);
+
+    await worker.stop();
+  });
+
   it('ensureStartQueue is idempotent (swallows "already exists")', async () => {
     await ensureStartQueue(boss, 'flow-starts-idem');
     await expect(ensureStartQueue(boss, 'flow-starts-idem')).resolves.toBeUndefined();

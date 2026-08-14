@@ -9,7 +9,8 @@
 **Durable workflows for TypeScript that run on the Postgres you already have.**
 
 Declare a DAG of Zod-typed steps. The engine runs each step as soon as its dependencies
-complete, persists every transition, retries failures, and resumes after a crash. There is
+complete, persists every transition, retries failures, and picks up where it left off after a
+restart. There is
 no workflow server to operate, no control plane, and no vendor — it's a library you import,
 not a platform you adopt.
 
@@ -241,7 +242,8 @@ Full docs — concepts, every feature, production wiring and the API reference �
 | [Fan-out & map](https://octabits-io.github.io/octaflow/core/fan-out-and-map/) | one child step per item of a runtime list |
 | [Signals](https://octabits-io.github.io/octaflow/core/signals/) · [Sub-workflows](https://octabits-io.github.io/octaflow/core/sub-workflows/) · [Saga](https://octabits-io.github.io/octaflow/core/saga-compensation/) | suspend, nest, and roll back |
 | [Postgres & pg-boss](https://octabits-io.github.io/octaflow/running/postgres-and-pg-boss/) | production wiring, workers, DLQ, cron |
-| [Observability](https://octabits-io.github.io/octaflow/running/observability/) | lifecycle events and spans |
+| [Cancellation & recovery](https://octabits-io.github.io/octaflow/running/cancellation-and-recovery/) | cancelling a run, and sweeping steps a crash left behind |
+| [Observability](https://octabits-io.github.io/octaflow/running/observability/) · [Live progress](https://octabits-io.github.io/octaflow/running/live-progress/) | lifecycle events, spans, and streaming them to a browser |
 | [The AI add-on](https://octabits-io.github.io/octaflow/extending/ai/) | token/cost capture, quota, usage rollups |
 | [Extending](https://octabits-io.github.io/octaflow/extending/interfaces/) | custom stores, dispatchers and gates |
 | [API reference](https://octabits-io.github.io/octaflow/reference/api/) | every export, by entry point |
@@ -267,6 +269,7 @@ Runnable, focused examples live in [`examples/`](./examples) — see [`examples/
 | 11 | `11-observability.ts` | observer events + tracer spans |
 | 12 | `12-postgres-pgboss-production.ts` | full pg store + gate + event sink + pg-boss + cron |
 | 13 | `13-ai-workflow.ts` | AI add-on (instrumented model + cost) |
+| 14 | `14-live-progress.ts` | `FlowObserver` → SSE fan-out (build your own dashboard) |
 
 The in-memory examples (01–11) share a small driver, [`examples/runtime.ts`](./examples/runtime.ts),
 that builds an engine over the in-memory store and an in-process queue you drain.

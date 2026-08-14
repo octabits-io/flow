@@ -67,6 +67,7 @@ export default defineConfig({
           label: 'Running it',
           items: [
             { label: 'Postgres & pg-boss', slug: 'running/postgres-and-pg-boss' },
+            { label: 'Cancellation & recovery', slug: 'running/cancellation-and-recovery' },
             { label: 'Observability', slug: 'running/observability' },
             { label: 'Live progress', slug: 'running/live-progress' },
             { label: 'Performance', slug: 'running/performance' },
