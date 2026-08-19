@@ -303,6 +303,81 @@ describe('createPgWorkflowStore (integration)', () => {
     expect(status.value.output).toEqual({ approval: { approved: false } });
   });
 
+  it('heartbeats a running step, and refuses once it is no longer the caller’s (Postgres)', async () => {
+    let current = new Date('2026-06-01T00:00:00.000Z');
+    const input = z.object({});
+    const a = defineStep<{}, { v: number }, Ctx>({
+      type: 'pghb:a',
+      workflowInputSchema: input,
+      outputSchema: z.object({ v: z.number() }),
+      heartbeatTimeoutMs: 60_000,
+      heartbeat: 'manual',
+      handler: async () => ({ v: 1 }),
+    });
+    const wf = buildWorkflow<{}, Ctx>({ type: 'pg-heartbeat', inputSchema: input, steps: { a } });
+
+    const h = harness(() => current);
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+    const id = started.value.workflowId;
+
+    const step = (await h.store.listSteps(id))[0]!;
+    expect(step.heartbeatAt).toBeNull();
+
+    // Not running yet — there is nothing to report on.
+    expect(await h.store.heartbeatStep(step.id, current.toISOString())).toBe(false);
+
+    await h.store.markStepRunning(step.id, current.toISOString());
+    current = new Date(current.getTime() + 30_000);
+    expect(await h.store.heartbeatStep(step.id, current.toISOString())).toBe(true);
+    expect((await h.store.getStep(step.id))?.heartbeatAt).toBe(current.toISOString());
+
+    // A cancelled run has nothing left to report to.
+    await h.engine.cancelWorkflow(id);
+    expect(await h.store.heartbeatStep(step.id, current.toISOString())).toBe(false);
+  });
+
+  it('sweeps on the last beat rather than the start, and clears it on re-claim (Postgres)', async () => {
+    let current = new Date('2026-06-02T00:00:00.000Z');
+    const input = z.object({});
+    const a = defineStep<{}, { v: number }, Ctx>({
+      type: 'pghbsweep:a',
+      workflowInputSchema: input,
+      outputSchema: z.object({ v: z.number() }),
+      heartbeatTimeoutMs: 60_000,
+      heartbeat: 'manual',
+      retry: { maxAttempts: 3, initialDelayMs: 0 },
+      handler: async () => ({ v: 1 }),
+    });
+    const wf = buildWorkflow<{}, Ctx>({ type: 'pg-heartbeat-sweep', inputSchema: input, steps: { a } });
+
+    const h = harness(() => current);
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+
+    const step = (await h.store.listSteps(started.value.workflowId))[0]!;
+    await h.store.markStepRunning(step.id, current.toISOString());
+    h.queue.length = 0;
+
+    // Past its window measured from the start, but it just spoke.
+    current = new Date(current.getTime() + 50_000);
+    await h.store.heartbeatStep(step.id, current.toISOString());
+    current = new Date(current.getTime() + 40_000);
+    expect((await h.engine.recoverStuckWorkflows()).retriedSteps).toBe(0);
+
+    // Now it has been silent for longer than the window.
+    current = new Date(current.getTime() + 30_000);
+    expect((await h.engine.recoverStuckWorkflows()).retriedSteps).toBe(1);
+
+    // The re-claim must not inherit the previous attempt's stamp, or the step
+    // would look stale the moment it starts again.
+    await h.store.markStepRunning(step.id, current.toISOString());
+    expect((await h.store.getStep(step.id))?.heartbeatAt).toBeNull();
+    expect((await h.engine.recoverStuckWorkflows()).retriedSteps).toBe(0);
+  });
+
   it('claims a step atomically: exactly one of two concurrent markStepRunning calls wins', async () => {
     const input = z.object({});
     const a = defineStep<{}, { v: number }, Ctx>({ type: 'pgclaim:a', workflowInputSchema: input, outputSchema: z.object({ v: z.number() }), handler: async () => ({ v: 1 }) });

@@ -12,6 +12,7 @@ function ctx(over: Partial<StepExecutionContext> = {}): StepExecutionContext {
     workflowInput: {},
     stepInput: {},
     dependencyOutputs: {},
+    heartbeat: async () => true,
     context: undefined,
     ...over,
   };

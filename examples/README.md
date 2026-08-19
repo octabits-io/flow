@@ -41,4 +41,4 @@ AI add-on; they need a real database / model and are structured to copy into you
 | 13 | [13-ai-workflow.ts](./13-ai-workflow.ts) | AI add-on (instrumented model + cost) |
 | 14 | [14-live-progress.ts](./14-live-progress.ts) | FlowObserver → SSE fan-out (build your own dashboard) |
 | 15 | [15-conditional-branching.ts](./15-conditional-branching.ts) | `when` guards + a `join: 'any'` convergence |
-| 16 | [16-deadlines-and-retry.ts](./16-deadlines-and-retry.ts) | wait deadlines, run deadlines, `retryWorkflow` |
+| 16 | [16-deadlines-and-retry.ts](./16-deadlines-and-retry.ts) | wait deadlines, run deadlines, `retryWorkflow`, heartbeats |

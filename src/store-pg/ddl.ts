@@ -58,10 +58,13 @@ CREATE TABLE IF NOT EXISTS ${step} (
   metadata      jsonb,
   attempts      integer     NOT NULL DEFAULT 0,
   parent_step_id bigint     REFERENCES ${step}(id) ON DELETE CASCADE,
+  heartbeat_at  timestamptz,
   started_at    timestamptz,
   completed_at  timestamptz,
   UNIQUE (workflow_id, key)
 );
+
+ALTER TABLE ${step} ADD COLUMN IF NOT EXISTS heartbeat_at timestamptz;
 
 CREATE INDEX IF NOT EXISTS flow_workflow_step_workflow_idx ON ${step} (workflow_id);
 CREATE INDEX IF NOT EXISTS flow_workflow_step_status_idx   ON ${step} (workflow_id, status);

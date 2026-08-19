@@ -18,6 +18,7 @@ function step(key: string, status: StepStatus, dependencies: string[] = [], pare
     metadata: null,
     attempts: 0,
     parentStepId,
+    heartbeatAt: null,
     startedAt: null,
     completedAt: null,
   };

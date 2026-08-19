@@ -82,6 +82,7 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
         metadata: null,
         attempts: 0,
         parentStepId: null,
+        heartbeatAt: null,
         startedAt: null,
         completedAt: null,
       };
@@ -113,7 +114,18 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
     if (!s || s.status !== 'pending') return false;
     s.status = 'running';
     s.startedAt = startedAt;
+    // Clear any beat left by a previous attempt — see the pg store for why.
+    s.heartbeatAt = null;
     s.attempts += 1;
+    return true;
+  }
+
+  async function heartbeatStep(stepId: StepId, at: string): Promise<boolean> {
+    const s = steps.get(stepId);
+    if (!s || s.status !== 'running') return false;
+    const w = workflows.get(s.workflowId);
+    if (!w || (w.status !== 'running' && w.status !== 'pending')) return false;
+    s.heartbeatAt = at;
     return true;
   }
 
@@ -164,6 +176,7 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
         metadata: null,
         attempts: 0,
         parentStepId,
+        heartbeatAt: null,
         startedAt: null,
         completedAt: null,
       };
@@ -195,6 +208,7 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
     s.output = null;
     s.error = null;
     s.attempts = 0;
+    s.heartbeatAt = null;
     s.startedAt = null;
     s.completedAt = null;
   }
@@ -276,7 +290,10 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
 
   async function findStuckSteps(workflowId: WorkflowId, cutoff: string): Promise<StepRecord[]> {
     return stepsOf(workflowId)
-      .filter((s) => s.status === 'running' && s.startedAt != null && s.startedAt < cutoff)
+      .filter((s) => {
+        const lastSeen = s.heartbeatAt ?? s.startedAt;
+        return s.status === 'running' && lastSeen != null && lastSeen < cutoff;
+      })
       .map(clone);
   }
 
@@ -286,6 +303,7 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
     getStep,
     listSteps,
     markStepRunning,
+    heartbeatStep,
     markStepPending,
     markStepWaiting,
     markStepMapping,

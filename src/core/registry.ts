@@ -15,6 +15,8 @@ export function createStepHandlerRegistry<TContext = unknown>(): StepHandlerRegi
         retry: options?.retry,
         timeoutMs: options?.timeoutMs,
         onTimeout: options?.onTimeout,
+        heartbeatTimeoutMs: options?.heartbeatTimeoutMs,
+        heartbeat: options?.heartbeat,
         delayMs: options?.delayMs,
         waitForEvent: options?.waitForEvent,
         map: options?.map,

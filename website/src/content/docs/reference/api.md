@@ -39,9 +39,15 @@ suspended steps. `handleStepJob(payload)` routes on the payload's `kind` and cal
 *(type)* `TypedStep`, `TypedStepContext`, `TypedWorkflow`, `StepOutput`, `WorkflowOutput`,
 `StepDeps`, `StepDefinition`, `WorkflowDefinition`, `RetryPolicy`, `StartOptions`
 
-### Branching & deadlines
+### Branching, deadlines & heartbeats
 
 *(type)* `JoinRule`, `StepConditionHandler`, `WaitTimeoutPolicy`
+
+Step-level policy lives on the registration: `when` / `join`
+([branching](/octaflow/core/branching/)), `timeoutMs` / `onTimeout`
+([deadlines](/octaflow/core/deadlines/)), `heartbeatTimeoutMs` / `heartbeat`
+([heartbeats](/octaflow/core/heartbeats/)). `ctx.heartbeat()` is on
+`StepExecutionContext` and `TypedStepContext`.
 
 `computeReadiness`, `isTerminalStepStatus` — the pure readiness rules behind
 [`when` and `join`](/octaflow/core/branching/); exported so a custom store's tests can assert

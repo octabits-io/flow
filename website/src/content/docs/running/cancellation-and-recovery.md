@@ -17,10 +17,12 @@ if (!cancelled.ok) throw new Error(cancelled.error.message); // workflow_not_fou
 Every `pending` **and `waiting`** step is marked `skipped`, the workflow finishes
 `cancelled`, and a `workflow.cancelled` event is emitted. Three things worth knowing:
 
-- **It does not interrupt a step already running.** There is no signal into an
-  in-flight handler; the step runs to completion, and its result lands on a workflow
-  that has already finished. Cancellation is a "stop scheduling more work" operation,
-  not a kill.
+- **It interrupts a running step only if that step beats.** There is no signal into
+  an in-flight handler on its own, so by default the step runs to completion and its
+  result lands on a workflow that has already finished. A step with a
+  [heartbeat](/octaflow/core/heartbeats/) learns it was cancelled on its next beat:
+  the engine fires `ctx.signal` and discards whatever the handler returns. Without
+  one, cancellation remains a "stop scheduling more work" operation, not a kill.
 - **Compensation does not run.** Saga rollback is wired to the *failure* path only
   (see [Saga compensation](/octaflow/core/saga-compensation/)). If you need completed
   steps undone on a cancel, do it yourself after the call returns.
@@ -45,9 +47,8 @@ const { retriedSteps, recoveredSteps, recoveredWorkflows, expiredWorkflows } =
 
 It scans every `running` workflow in the partition and does three things:
 
-- **Re-queues a crashed step** that entered `running` longer ago than the stuck
-  threshold, provided its attempt budget has room. A dead pod costs an attempt, not the
-  run.
+- **Re-queues a crashed step** that has been silent longer than its liveness window,
+  provided its attempt budget has room. A dead pod costs an attempt, not the run.
 - **Fails a crashed step** whose budget is spent, cascading the workflow to `failed` in
   the usual way (dependents skipped, compensation run).
 - **Fails a run past its [deadline](/octaflow/core/deadlines/)**, which nothing else
@@ -57,6 +58,11 @@ It scans every `running` workflow in the partition and does three things:
 A re-queued step runs again from the top, and the first attempt may have got partway
 through its side effects before the worker died. This is the same contract retries
 already impose — but it now applies to crashes too, which it did not before.
+
+Worse, on a *false* positive the re-run is **concurrent** with an original invocation
+that never actually died. A [heartbeat](/octaflow/core/heartbeats/) is what removes
+that case rather than making it unlikely: a live step keeps proving it, and one that
+was superseded anyway finds out on its next beat and discards its outcome.
 
 If re-entering a half-finished step is worse than losing the run, set
 `config.onStuckStep: 'fail'` and a stuck step is failed outright whatever its budget
@@ -84,6 +90,11 @@ skew.
 stuckThreshold = stepExpirySeconds + stuckStepBufferSeconds
 ```
 
+This is the **default** window, measured from when a step started. A step type that
+declares [`heartbeatTimeoutMs`](/octaflow/core/heartbeats/) overrides it with its own,
+measured from when the step last reported in — which is what lets the window be short
+without condemning work that is merely slow.
+
 Both come from `WorkflowEngineConfig`, and both have defaults:
 
 | Option | Default | Meaning |
@@ -91,6 +102,8 @@ Both come from `WorkflowEngineConfig`, and both have defaults:
 | `stepExpirySeconds` | `600` | What you told the *dispatcher* a step may occupy a worker for |
 | `stuckStepBufferSeconds` | `300` | Grace on top, so a step that is merely slow isn't swept |
 | `onStuckStep` | `'retry'` | `'retry'` re-queues within the attempt budget; `'fail'` always fails |
+
+Per step type, `heartbeatTimeoutMs` replaces the first two entirely for that type.
 
 ```ts
 const engine = createWorkflowEngine({

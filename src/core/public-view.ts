@@ -5,7 +5,7 @@
  * The engine's records ({@link WorkflowRecord}, {@link StepRecord}) are the
  * store's data model: they carry fields that must not leak onto a public API
  * (`partitionKey`, `idempotencyKey`, sub-workflow linkage, `metadata`, retry
- * `attempts`) and step statuses that are engine mechanics rather than display
+ * `attempts`, heartbeats) and step statuses that are engine mechanics rather than display
  * states. Serving them verbatim also couples the consumer's API contract to
  * flow's record shape. This module owns the boundary instead:
  *
@@ -151,8 +151,8 @@ export const PUBLIC_WORKFLOW_SCHEMA = z.object({
 
 /**
  * Project a step record to its public view. Drops `workflowId` (redundant
- * under the parent), `metadata`, `attempts`, and `parentStepId`; folds the
- * status.
+ * under the parent), `metadata`, `attempts`, `heartbeatAt`, and `parentStepId`;
+ * folds the status.
  */
 export function toPublicStep(step: StepRecord): PublicWorkflowStep {
   return {

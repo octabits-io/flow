@@ -107,6 +107,19 @@ export interface StepExecutionContext<TContext = unknown> {
   dependencyOutputs: Record<string, unknown>;
   /** Cancellation signal. */
   signal?: AbortSignal;
+  /**
+   * Report that this step is still alive, and ask whether it should keep going.
+   *
+   * Resolves `false` when the step is no longer this invocation's to run — the
+   * workflow was cancelled or blew its deadline, or the stuck-step sweeper
+   * decided the worker was dead and re-queued the step. All three mean *stop*;
+   * the engine fires {@link signal} and discards whatever the handler returns.
+   *
+   * Writes are throttled, so calling it in a tight loop is cheap. A step type
+   * that declares no `heartbeatTimeoutMs` gets a no-op that always resolves
+   * `true`.
+   */
+  heartbeat: () => Promise<boolean>;
   /** Host-provided per-step context. */
   context: TContext;
 }
@@ -197,6 +210,25 @@ export interface StepRegistration<TContext = unknown> {
   /** For a `waitForEvent` step: what a `timeoutMs` expiry does. Default `'fail'`. */
   onTimeout?: WaitTimeoutPolicy;
   /**
+   * How long this step may go **silent** before the sweeper treats its worker as
+   * dead, in ms. Opt-in: without it the step is judged by the engine-wide
+   * `stepExpirySeconds + stuckStepBufferSeconds` measured from when it started,
+   * which cannot tell a long step from a dead one.
+   *
+   * Setting it makes the engine beat automatically while the handler runs, so a
+   * crash is noticed in seconds rather than minutes without touching the handler.
+   */
+  heartbeatTimeoutMs?: number;
+  /**
+   * Who does the beating. Default `'auto'` — the engine beats on a timer for as
+   * long as the handler runs, which detects a dead *process* (the timer dies
+   * with it).
+   *
+   * `'manual'` suppresses that timer, so only `ctx.heartbeat()` counts. Silence
+   * then also means a **hung** handler, at the cost of having to place the calls.
+   */
+  heartbeat?: 'auto' | 'manual';
+  /**
    * Durable start delay in ms: once the step becomes ready (all deps complete), its
    * first dispatch is held for this long via the queue. A no-op handler with a delay
    * is a durable "sleep" step. Does not affect retry backoff.
@@ -247,6 +279,8 @@ export interface StepHandlerRegistry<TContext = unknown> {
       retry?: RetryPolicy;
       timeoutMs?: number;
       onTimeout?: WaitTimeoutPolicy;
+      heartbeatTimeoutMs?: number;
+      heartbeat?: 'auto' | 'manual';
       delayMs?: number;
       waitForEvent?: boolean;
       map?: boolean;
@@ -306,6 +340,12 @@ export interface StepRecord {
   attempts: number;
   /** For a map child: the id of its map-parent step; null for normal/keyed steps. */
   parentStepId: StepId | null;
+  /**
+   * When the running worker last reported in, or null if it never has. The
+   * stuck-step sweeper prefers this over `startedAt` — it is the difference
+   * between "started a while ago" and "hasn't spoken recently".
+   */
+  heartbeatAt: string | null;
   startedAt: string | null;
   completedAt: string | null;
 }

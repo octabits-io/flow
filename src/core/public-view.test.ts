@@ -24,6 +24,7 @@ function makeStep(overrides: Partial<StepRecord> = {}): StepRecord {
     metadata: { internal: true },
     attempts: 3,
     parentStepId: null,
+    heartbeatAt: null,
     startedAt: '2026-07-14T10:00:00.000Z',
     completedAt: '2026-07-14T10:00:01.000Z',
     ...overrides,

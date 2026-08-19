@@ -15,6 +15,9 @@
  *
  * 3. `StartOptions.timeoutMs` puts a wall-clock budget on the whole run.
  *
+ * 4. `heartbeatTimeoutMs` lets a long step prove it is alive, so the stuck-step
+ *    sweeper can use a short window without condemning work that is simply slow.
+ *
  * The in-memory runtime here uses a virtual clock, so the 48-hour wait below
  * resolves instantly while still behaving exactly as it would on a real queue.
  *
@@ -191,7 +194,62 @@ async function runDeadline() {
   console.log(`  → ${status.value.status}: ${status.value.error}`);
 }
 
+// ---------------------------------------------------------------------------
+// 4. A long step that proves it is alive
+// ---------------------------------------------------------------------------
+
+/**
+ * Both steps below have been running for twenty minutes — well past the 15
+ * minutes after which the sweeper gives up on a silent step. One has been
+ * reporting in; the other has not. Only the silent one is recovered.
+ *
+ * The sweeper is driven directly here because the point is what it decides, not
+ * how the work runs: `markStepRunning` stands in for a worker that claimed a
+ * step, and `heartbeatStep` for one that is still going.
+ */
+async function heartbeats() {
+  console.log('\n— a long step that reports in, next to one that went quiet —');
+  const { engine, registry, store, clock, advance } = createInMemoryRuntime();
+
+  const transcode = defineStep({
+    type: 'ex16:transcode',
+    workflowInputSchema: z.object({}),
+    outputSchema: z.object({}),
+    // "Silence for two minutes means the worker is gone" — safe to say only
+    // because the step reports in while it works.
+    heartbeatTimeoutMs: 2 * 60 * 1000,
+    handler: async () => ({}),
+  });
+  const wf = buildWorkflow({ type: 'ex16:long-work', inputSchema: z.object({}), steps: { transcode } });
+  wf.register(registry);
+
+  const ids: Record<string, number> = {};
+  for (const name of ['alive', 'quiet']) {
+    const started = await wf.start(engine, {});
+    if (!started.ok) throw new Error(started.error.message);
+    ids[name] = started.value.workflowId;
+    const step = (await store.listSteps(started.value.workflowId))[0]!;
+    await store.markStepRunning(step.id, clock.at.toISOString());
+  }
+
+  // Twenty minutes pass. The 'alive' worker checks in every minute.
+  for (let minute = 0; minute < 20; minute++) {
+    advance(60_000);
+    const step = (await store.listSteps(ids.alive!))[0]!;
+    await store.heartbeatStep(step.id, clock.at.toISOString());
+  }
+
+  const swept = await engine.recoverStuckWorkflows();
+  console.log(`  swept: ${swept.recoveredSteps} step(s) presumed dead`);
+  for (const [name, id] of Object.entries(ids)) {
+    const status = await engine.getWorkflowStatus(id);
+    if (!status.ok) throw new Error(status.error.message);
+    console.log(`  ${name.padEnd(5)} → ${status.value.status}`);
+  }
+}
+
 await waitThatExpires();
 await waitThatIsAnswered();
 await retryAfterAnOutage();
 await runDeadline();
+await heartbeats();

@@ -95,6 +95,31 @@ function reverseTopologicalOrder(steps: StepRecord[]): StepRecord[] {
 /** Recorded on a step its `when` guard declined to run. */
 const CONDITION_NOT_MET = 'Skipped: condition not met';
 
+/**
+ * How often to beat, given how long silence is tolerated. A third of the window
+ * leaves room for two lost beats before the sweeper draws a conclusion; the
+ * floor keeps a very short window from turning into a write storm.
+ */
+const HEARTBEAT_INTERVAL_DIVISOR = 3;
+const MIN_HEARTBEAT_INTERVAL_MS = 1000;
+
+/** The heartbeat attached to one step execution. */
+interface Heartbeat {
+  /** Beat now (subject to the write throttle) and report whether to keep going. */
+  beat(): Promise<boolean>;
+  /** True once a beat came back `false` — this invocation no longer owns the step. */
+  readonly lost: boolean;
+  /** Stop the automatic timer. Always call it, in a `finally`. */
+  stop(): void;
+}
+
+/** A step type with no liveness window declared: nothing to report, nothing to lose. */
+const inertHeartbeat: Heartbeat = {
+  beat: async () => true,
+  lost: false,
+  stop() {},
+};
+
 // ============================================================================
 // Dependencies
 // ============================================================================
@@ -224,6 +249,83 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   }
 
   // --------------------------------------------------------------------------
+  // Heartbeats
+  // --------------------------------------------------------------------------
+
+  /**
+   * Attach a heartbeat to one step execution.
+   *
+   * While the handler runs, the beat answers two questions with one write: *this
+   * worker is alive*, and *does this invocation still own the step*. A beat that
+   * comes back `false` — cancelled workflow, blown deadline, or a sweeper that
+   * gave the step to someone else — aborts the handler and latches `lost`, which
+   * is what stops this invocation writing its outcome over the new owner's.
+   *
+   * The automatic timer is the part that needs no cooperation from the handler:
+   * if the process dies, the timer dies with it, which is exactly the signal the
+   * sweeper is looking for. `heartbeat: 'manual'` turns it off for handlers that
+   * want silence to mean "hung", not just "dead".
+   */
+  function startHeartbeat(workflowId: WorkflowId, step: StepRecord, abort: AbortController): Heartbeat {
+    const registration = registry.getRegistration(step.type);
+    const windowMs = registration?.heartbeatTimeoutMs;
+    if (!windowMs || windowMs <= 0) return inertHeartbeat;
+
+    const intervalMs = Math.max(MIN_HEARTBEAT_INTERVAL_MS, Math.floor(windowMs / HEARTBEAT_INTERVAL_DIVISOR));
+    let lost = false;
+    let lastWriteMs = now().getTime();
+    let inFlight: Promise<boolean> | undefined;
+
+    async function write(): Promise<boolean> {
+      try {
+        const stillOurs = await store.heartbeatStep(step.id, nowIso());
+        lastWriteMs = now().getTime();
+        if (!stillOurs && !lost) {
+          lost = true;
+          logger.warn('Step lost its claim mid-run — aborting', { workflowId, stepId: step.id, stepKey: step.key });
+          abort.abort();
+        }
+        return stillOurs;
+      } catch (error) {
+        // A failed beat is not a verdict. Treating a blip in the database as
+        // "you have been cancelled" would kill healthy work; the sweeper is the
+        // backstop if the worker really is gone.
+        logger.error('Heartbeat failed', error instanceof Error ? error : new Error(String(error)), {
+          workflowId,
+          stepId: step.id,
+        });
+        return !lost;
+      }
+    }
+
+    async function beat(): Promise<boolean> {
+      if (lost) return false;
+      // Throttle: the handler may call this per loop iteration, but only one
+      // write per interval lands. Concurrent callers share the in-flight write.
+      if (inFlight) return inFlight;
+      if (now().getTime() - lastWriteMs < intervalMs) return true;
+      inFlight = write().finally(() => {
+        inFlight = undefined;
+      });
+      return inFlight;
+    }
+
+    const timer = registration?.heartbeat === 'manual' ? undefined : setInterval(() => void beat(), intervalMs);
+    // Never hold the process open for a heartbeat.
+    timer?.unref?.();
+
+    return {
+      beat,
+      get lost() {
+        return lost;
+      },
+      stop() {
+        if (timer) clearInterval(timer);
+      },
+    };
+  }
+
+  // --------------------------------------------------------------------------
   // Dispatch helpers
   // --------------------------------------------------------------------------
 
@@ -237,6 +339,20 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   /** Whether a step type suspends on readiness instead of dispatching. */
   function isWaitStep(stepType: string): boolean {
     return registry.getRegistration(stepType)?.waitForEvent === true;
+  }
+
+  /**
+   * The shortest liveness window in play: the engine-wide stuck threshold, or a
+   * shorter `heartbeatTimeoutMs` if any registered step type asks for one. Used
+   * to widen the sweeper's query so short-window steps are actually seen.
+   */
+  function narrowestLivenessWindowMs(defaultMs: number): number {
+    let narrowest = defaultMs;
+    for (const type of registry.types()) {
+      const windowMs = registry.getRegistration(type)?.heartbeatTimeoutMs;
+      if (windowMs && windowMs > 0 && windowMs < narrowest) narrowest = windowMs;
+    }
+    return narrowest;
   }
 
   /** A step type's join rule — how its dependencies gate it. */
@@ -610,12 +726,14 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
         'flow.partition': partitionKey,
       });
 
+      let heartbeat: Heartbeat = inertHeartbeat;
       try {
         const context = hooks.buildStepContext
           ? await hooks.buildStepContext({ workflowId, stepId, stepKey: step.key, partitionKey, workflow, step })
           : (undefined as TContext);
 
         const abort = new AbortController();
+        heartbeat = startHeartbeat(workflowId, step, abort);
         const ctx: StepExecutionContext<TContext> = {
           workflowId,
           stepId,
@@ -625,6 +743,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
           stepInput: step.input ?? {},
           dependencyOutputs,
           signal: abort.signal,
+          heartbeat: heartbeat.beat,
           context,
         };
 
@@ -663,6 +782,15 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
 
         const handlerResult: Result<Record<string, unknown>, StepError> =
           guard && !guard.ok ? guard : await runWithTimeout(handler, ctx, timeoutMs, abort);
+
+        // A beat came back `false` while the handler was running: this step now
+        // belongs to someone else (the sweeper re-queued it) or to nobody (the
+        // run was cancelled or expired). Writing an outcome here would stamp
+        // over the new owner's work, so this invocation goes quietly.
+        if (heartbeat.lost) {
+          logger.warn('Discarding the outcome of a superseded step', { workflowId, stepId, stepKey: step.key, attempt: attemptNo });
+          return { ok: true, value: undefined };
+        }
 
         if (handlerResult.ok) {
           // Map parent: the handler returned the item list — spawn children, don't complete.
@@ -722,6 +850,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
         // Re-throw so the dispatcher can retry
         throw error;
       } finally {
+        heartbeat.stop();
         span.end();
       }
     } finally {
@@ -1076,6 +1205,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
           workflowInput: workflow.input ?? {},
           stepInput: step.input ?? {},
           dependencyOutputs,
+          heartbeat: inertHeartbeat.beat,
           context,
           output: step.output ?? {},
         });
@@ -1236,8 +1366,12 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
    * Run it on a schedule (a cron job, or the pg-boss scheduler).
    */
   async function recoverStuckWorkflows(): Promise<RecoverySweepResult> {
-    const stuckThresholdSeconds = stepExpirySeconds + stuckStepBufferSeconds;
-    const cutoff = new Date(now().getTime() - stuckThresholdSeconds * 1000).toISOString();
+    const defaultThresholdMs = (stepExpirySeconds + stuckStepBufferSeconds) * 1000;
+    // Candidates are fetched against the *widest* window any step type could
+    // need, because a type with a 30s heartbeat window must not wait for the
+    // 15-minute default before it is even looked at. Each candidate is then held
+    // to its own threshold below.
+    const cutoff = new Date(now().getTime() - narrowestLivenessWindowMs(defaultThresholdMs)).toISOString();
 
     const runningWorkflows = await store.listRunningWorkflows();
     const empty: RecoverySweepResult = { retriedSteps: 0, recoveredSteps: 0, recoveredWorkflows: 0, expiredWorkflows: 0 };
@@ -1258,8 +1392,18 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       const stuckSteps = await store.findStuckSteps(workflow.id, cutoff);
       for (const step of stuckSteps) {
         const registration = registry.getRegistration(step.type);
+        const heartbeatMs = registration?.heartbeatTimeoutMs;
+        const thresholdMs = heartbeatMs && heartbeatMs > 0 ? heartbeatMs : defaultThresholdMs;
+
+        // A step that reports in is judged on when it last spoke; one that never
+        // has, on when it started. Anything still inside its own window is alive.
+        const lastSeen = Date.parse(step.heartbeatAt ?? step.startedAt ?? '');
+        if (!Number.isNaN(lastSeen) && now().getTime() - lastSeen < thresholdMs) continue;
+
         const maxAttempts = registration?.retry?.maxAttempts ?? 1;
-        const reason = `Step exceeded ${stuckThresholdSeconds}s without completion (worker likely crashed)`;
+        const reason = heartbeatMs
+          ? `Step went silent for more than ${Math.round(thresholdMs / 1000)}s (worker likely crashed)`
+          : `Step exceeded ${Math.round(thresholdMs / 1000)}s without completion (worker likely crashed)`;
 
         if (onStuckStep === 'retry' && step.attempts < maxAttempts) {
           logger.warn('Re-queueing stuck workflow step', { workflowId: workflow.id, stepId: step.id, stepKey: step.key, attempt: step.attempts, maxAttempts, startedAt: step.startedAt });

@@ -61,6 +61,7 @@ export default defineConfig({
             { label: 'Branching', slug: 'core/branching' },
             { label: 'Signals', slug: 'core/signals' },
             { label: 'Deadlines', slug: 'core/deadlines' },
+            { label: 'Heartbeats', slug: 'core/heartbeats' },
             { label: 'Sub-workflows', slug: 'core/sub-workflows' },
             { label: 'Saga compensation', slug: 'core/saga-compensation' },
           ],

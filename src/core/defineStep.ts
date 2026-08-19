@@ -51,6 +51,10 @@ export interface TypedStep<
   readonly timeoutMs?: number;
   /** For a wait step: what a `timeoutMs` expiry does. Default `'fail'`. */
   readonly onTimeout?: WaitTimeoutPolicy;
+  /** How long this step may go silent before its worker is presumed dead, in ms. */
+  readonly heartbeatTimeoutMs?: number;
+  /** Who beats: the engine on a timer (`'auto'`, default) or only `ctx.heartbeat()`. */
+  readonly heartbeat?: 'auto' | 'manual';
   /** Optional durable start delay in ms (held in the queue once the step is ready). */
   readonly delayMs?: number;
   /** When true, the step suspends (waiting) until `engine.resumeStep` delivers an event. */
@@ -64,7 +68,13 @@ export interface TypedStep<
   /** For a map parent: the step type registered for per-item children. */
   readonly childType?: string;
   /** For a map parent: the child step's registration, registered alongside the parent. */
-  readonly childRegistration?: { type: string; handler: StepHandler<TContext>; retry?: RetryPolicy; timeoutMs?: number };
+  readonly childRegistration?: {
+    type: string;
+    handler: StepHandler<TContext>;
+    retry?: RetryPolicy;
+    timeoutMs?: number;
+    heartbeatTimeoutMs?: number;
+  };
   /** For a sub-workflow step: the child workflow definition the engine starts. */
   readonly subWorkflowDefinition?: WorkflowDefinition;
   /** For a sub-workflow step: registers the child workflow's step handlers alongside the parent. */
@@ -113,6 +123,12 @@ export interface TypedStepContext<
   stepInput: Record<string, unknown>;
   deps: StepDeps<TDeps, TJoin>;
   signal?: AbortSignal;
+  /**
+   * Report that this step is still alive, and ask whether to keep going —
+   * `false` means it is no longer yours to run (cancelled, expired, or
+   * re-queued as dead). See `heartbeatTimeoutMs`.
+   */
+  heartbeat: () => Promise<boolean>;
   context: TContext;
 }
 
@@ -172,6 +188,22 @@ interface DefineStepConfig<
   timeoutMs?: number;
   /** For a `waitForEvent` step: what a `timeoutMs` expiry does. Default `'fail'`. */
   onTimeout?: WaitTimeoutPolicy;
+  /**
+   * How long this step may go **silent** before the stuck-step sweeper presumes
+   * its worker died, in ms. Opt-in: without it the step is judged by the
+   * engine-wide threshold measured from when it started, which cannot tell a
+   * long step from a dead one.
+   *
+   * Setting it is enough — the engine beats automatically while the handler
+   * runs, so a crash is caught in seconds without touching the handler.
+   */
+  heartbeatTimeoutMs?: number;
+  /**
+   * Who beats. `'auto'` (default) lets the engine do it on a timer, which
+   * detects a dead process. `'manual'` leaves it to `ctx.heartbeat()`, so
+   * silence also means a *hung* handler.
+   */
+  heartbeat?: 'auto' | 'manual';
   /** Optional durable start delay in ms — held in the queue once the step is ready. */
   delayMs?: number;
   /** When true, the step suspends (waiting) until `engine.resumeStep` delivers an event. */
@@ -270,6 +302,7 @@ export function defineStep<
         stepInput: ctx.stepInput,
         deps: parsedDeps as Ctx['deps'],
         signal: ctx.signal,
+        heartbeat: ctx.heartbeat,
         context: ctx.context,
       },
     };
@@ -339,6 +372,7 @@ export function defineStep<
         stepInput: ctx.stepInput,
         deps: parsedDeps as Ctx['deps'],
         signal: ctx.signal,
+        heartbeat: ctx.heartbeat,
         context: ctx.context,
         output: (out.success ? out.data : ctx.output) as TOutput,
       });
@@ -354,6 +388,8 @@ export function defineStep<
     retry,
     timeoutMs,
     onTimeout: config.onTimeout,
+    heartbeatTimeoutMs: config.heartbeatTimeoutMs,
+    heartbeat: config.heartbeat,
     delayMs,
     waitForEvent,
     compensate: wrappedCompensate,
@@ -454,6 +490,8 @@ export function defineMapStep<
   itemIsRetryable?: (error: unknown) => boolean;
   /** Optional per-item wall-clock timeout in ms. */
   itemTimeoutMs?: number;
+  /** Per-item liveness window in ms — see `defineStep`'s `heartbeatTimeoutMs`. */
+  itemHeartbeatTimeoutMs?: number;
   /** Guard: fan out only if the predicate holds — see `defineStep`. */
   when?: (ctx: TypedStepContext<TWorkflowInput, TDeps, TContext>) => boolean | Promise<boolean>;
 }): TypedStep<TWorkflowInput, { items: TItemOutput[] }, TDeps, TContext> {
@@ -478,6 +516,7 @@ export function defineMapStep<
     retry: config.itemRetry,
     isRetryable: config.itemIsRetryable,
     timeoutMs: config.itemTimeoutMs,
+    heartbeatTimeoutMs: config.itemHeartbeatTimeoutMs,
     handler: async (ctx) =>
       config.each(ctx.stepInput.item as TItem, {
         index: Number(ctx.stepInput.index ?? 0),
@@ -493,7 +532,13 @@ export function defineMapStep<
     outputSchema: z.object({ items: z.array(config.itemOutputSchema) }) as unknown as z.ZodType<{ items: TItemOutput[] }>,
     map: true,
     childType,
-    childRegistration: { type: childType, handler: child.handler, retry: child.retry, timeoutMs: child.timeoutMs },
+    childRegistration: {
+      type: childType,
+      handler: child.handler,
+      retry: child.retry,
+      timeoutMs: child.timeoutMs,
+      heartbeatTimeoutMs: child.heartbeatTimeoutMs,
+    },
   } as TypedStep<TWorkflowInput, { items: TItemOutput[] }, TDeps, TContext>;
 }
 
@@ -648,6 +693,8 @@ export function buildWorkflow<
           retry: step.retry,
           timeoutMs: step.timeoutMs,
           onTimeout: step.onTimeout,
+          heartbeatTimeoutMs: step.heartbeatTimeoutMs,
+          heartbeat: step.heartbeat,
           delayMs: step.delayMs,
           waitForEvent: step.waitForEvent,
           map: step.map,
@@ -660,7 +707,11 @@ export function buildWorkflow<
         // A map step also registers its per-item child handler.
         if (step.childRegistration) {
           const c = step.childRegistration;
-          registry.register(c.type, c.handler, { retry: c.retry, timeoutMs: c.timeoutMs });
+          registry.register(c.type, c.handler, {
+            retry: c.retry,
+            timeoutMs: c.timeoutMs,
+            heartbeatTimeoutMs: c.heartbeatTimeoutMs,
+          });
         }
         // A sub-workflow step also registers the child workflow's step handlers.
         if (step.subWorkflowRegister) step.subWorkflowRegister(registry);

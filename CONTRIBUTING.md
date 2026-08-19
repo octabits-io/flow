@@ -87,6 +87,16 @@ Two more worth calling out, because they look interchangeable and are not:
   began, and a wait deadline is measured from it; without it, a redelivered deadline job
   cannot tell "the budget is spent" from "this step suspended again a moment ago".
 
+And one more that is a correctness requirement rather than a naming trap:
+
+> `heartbeatStep` must write **conditionally, in one statement**, and report whether the
+> step is still the caller's — that is, still `running`, under a workflow still `pending`
+> or `running`. The engine turns a `false` into an abort, so a read-then-write (which
+> races the sweeper) or an unconditional write means a cancelled step keeps going, or two
+> invocations of one step both believe they own it. `markStepRunning` and `resetStep` must
+> clear `heartbeat_at`, or a fresh attempt inherits a stamp older than its own start and
+> looks stale immediately.
+
 If you add a store, port the behavioural tests in `src/store-pg/store.test.ts`.
 
 ## The docs site

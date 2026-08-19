@@ -89,6 +89,7 @@ type StepRow = {
   metadata: Record<string, unknown> | null;
   attempts: number;
   parent_step_id: string | null;
+  heartbeat_at: Date | null;
   started_at: Date | null;
   completed_at: Date | null;
 };
@@ -131,6 +132,7 @@ function mapStep(r: StepRow): StepRecord {
     metadata: r.metadata ?? null,
     attempts: Number(r.attempts ?? 0),
     parentStepId: r.parent_step_id == null ? null : Number(r.parent_step_id),
+    heartbeatAt: iso(r.heartbeat_at),
     startedAt: iso(r.started_at),
     completedAt: iso(r.completed_at),
   };
@@ -236,8 +238,28 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
     // `AND status = 'pending'` makes the claim atomic: exactly one of two workers
     // handed the same job can match a row, so the handler never runs twice.
     const res = await exec.query(
-      `UPDATE ${STEP} SET status = 'running', started_at = $2, attempts = attempts + 1 WHERE id = $1 AND partition_key = $3 AND status = 'pending'`,
+      // `heartbeat_at = NULL` matters: a retry re-claims a row that may still
+      // carry the previous attempt's beat, and that stamp is older than this
+      // attempt's `started_at` — leaving it would make a freshly claimed step
+      // look stale to the sweeper and get it swept immediately.
+      `UPDATE ${STEP} SET status = 'running', started_at = $2, heartbeat_at = NULL, attempts = attempts + 1 WHERE id = $1 AND partition_key = $3 AND status = 'pending'`,
       [stepId, startedAt, partitionKey],
+    );
+    return (res.rowCount ?? 0) > 0;
+  }
+
+  async function heartbeatStep(stepId: StepId, at: string): Promise<boolean> {
+    // One statement decides both questions the caller is really asking: is this
+    // step still mine, and is the run it belongs to still going? A read-then-write
+    // would race the sweeper that re-queues a step it believes is dead.
+    const res = await exec.query(
+      `UPDATE ${STEP} s SET heartbeat_at = $2
+         FROM ${WF} w
+        WHERE s.id = $1 AND s.partition_key = $3
+          AND w.id = s.workflow_id AND w.partition_key = s.partition_key
+          AND s.status = 'running'
+          AND w.status IN ('running', 'pending')`,
+      [stepId, at, partitionKey],
     );
     return (res.rowCount ?? 0) > 0;
   }
@@ -317,7 +339,7 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
     await exec.query(
       `UPDATE ${STEP}
           SET status = 'pending', output = NULL, error = NULL, attempts = 0,
-              started_at = NULL, completed_at = NULL
+              heartbeat_at = NULL, started_at = NULL, completed_at = NULL
         WHERE id = $1 AND partition_key = $2`,
       [stepId, partitionKey],
     );
@@ -439,7 +461,9 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
   async function findStuckSteps(workflowId: WorkflowId, cutoff: string): Promise<StepRecord[]> {
     const res = await exec.query<StepRow>(
       `SELECT * FROM ${STEP}
-        WHERE workflow_id = $1 AND partition_key = $2 AND status = 'running' AND started_at IS NOT NULL AND started_at < $3::timestamptz`,
+        WHERE workflow_id = $1 AND partition_key = $2 AND status = 'running'
+          AND COALESCE(heartbeat_at, started_at) IS NOT NULL
+          AND COALESCE(heartbeat_at, started_at) < $3::timestamptz`,
       [workflowId, partitionKey, cutoff],
     );
     return res.rows.map(mapStep);
@@ -468,6 +492,7 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
     getStep,
     listSteps,
     markStepRunning,
+    heartbeatStep,
     markStepPending,
     markStepWaiting,
     markStepMapping,

@@ -159,6 +159,23 @@ export interface WorkflowStore {
   /** Reset a step to `pending` for a scheduled retry (leaves `attempts` as-is). */
   markStepPending(stepId: StepId): Promise<void>;
   /**
+   * Stamp `heartbeatAt` on a step whose handler is still working, and report
+   * whether that step is still the caller's to run.
+   *
+   * Implementations MUST make the write conditional, and MUST return `false`
+   * rather than writing when either is untrue:
+   *
+   * - the step is still `running` — if the sweeper decided its worker was dead
+   *   and put it back to `pending`, another invocation now owns it;
+   * - its workflow is still `pending` or `running` — a cancelled or expired run
+   *   has nothing left to report to.
+   *
+   * The engine turns a `false` into an abort, so getting this wrong means a
+   * cancelled step keeps working, or two invocations of one step both believe
+   * they own it. One statement, not a read-then-write: the sweeper races it.
+   */
+  heartbeatStep(stepId: StepId, at: string): Promise<boolean>;
+  /**
    * Flip a ready step to `waiting` — it suspends until `resumeStep` (waitForEvent)
    * or a sub-workflow child settles. `waitingAt` is stamped on `startedAt`: it is
    * when the suspension began, which is what a wait deadline is measured from
@@ -217,6 +234,13 @@ export interface WorkflowStore {
   // --- crash recovery ---
   /** All workflows currently in `running` state (for the stuck-step sweeper). */
   listRunningWorkflows(): Promise<WorkflowRecord[]>;
-  /** Steps stuck in `running` with `startedAt` older than `cutoff` (ISO string). */
+  /**
+   * Steps in `running` that have been silent since before `cutoff` (ISO string) —
+   * measured from `heartbeatAt` when the step has ever reported in, and from
+   * `startedAt` when it has not.
+   *
+   * These are *candidates*: the engine applies each step type's own liveness
+   * threshold afterwards, so `cutoff` is the widest window it could need.
+   */
   findStuckSteps(workflowId: WorkflowId, cutoff: string): Promise<StepRecord[]>;
 }
