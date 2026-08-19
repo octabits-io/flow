@@ -18,6 +18,10 @@
  * 4. `heartbeatTimeoutMs` lets a long step prove it is alive, so the stuck-step
  *    sweeper can use a short window without condemning work that is simply slow.
  *
+ * 5. That same beat is how a running step learns it was cancelled — `ctx.heartbeat()`
+ *    resolves false and the engine fires `ctx.signal`, which is the only way to
+ *    interrupt work that is already in flight.
+ *
  * The in-memory runtime here uses a virtual clock, so the 48-hour wait below
  * resolves instantly while still behaving exactly as it would on a real queue.
  *
@@ -248,8 +252,77 @@ async function heartbeats() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 5. Interrupting a step that is already running
+// ---------------------------------------------------------------------------
+
+/**
+ * Cancelling a run stops it scheduling more work, but it cannot reach into
+ * another worker's process to stop the step already executing there. A beat is
+ * the way in: it is a round trip the step is already making, so its answer can
+ * carry "you are no longer needed".
+ */
+async function cancelMidFlight() {
+  console.log('\n— cancelling work that is already in flight —');
+  const { engine, registry, drain, advance } = createInMemoryRuntime();
+
+  // The example has to cancel while the handler is genuinely mid-loop, which
+  // means waiting for it to get there (`atChunkOne`) and holding it until the
+  // cancel has landed (`cancelled`).
+  let reachedChunkOne!: () => void;
+  const atChunkOne = new Promise<void>((resolve) => {
+    reachedChunkOne = resolve;
+  });
+  let letItRun!: () => void;
+  const cancelled = new Promise<void>((resolve) => {
+    letItRun = resolve;
+  });
+
+  let chunksDone = 0;
+  const importRows = defineStep({
+    type: 'ex16:import',
+    workflowInputSchema: z.object({}),
+    outputSchema: z.object({ chunksDone: z.number() }),
+    heartbeatTimeoutMs: 60 * 1000,
+    handler: async (ctx) => {
+      for (let chunk = 0; chunk < 10; chunk++) {
+        if (chunk === 1) {
+          reachedChunkOne();
+          await cancelled;
+        }
+        // Beat between chunks: reports progress *and* asks whether to carry on.
+        if (!(await ctx.heartbeat())) {
+          console.log(`  import: told to stop after ${chunksDone} chunks (signal aborted: ${ctx.signal?.aborted})`);
+          return { chunksDone };
+        }
+        chunksDone++;
+      }
+      return { chunksDone };
+    },
+  });
+  const wf = buildWorkflow({ type: 'ex16:import-job', inputSchema: z.object({}), steps: { importRows } });
+  wf.register(registry);
+
+  const started = await wf.start(engine, {});
+  if (!started.ok) throw new Error(started.error.message);
+  const id = started.value.workflowId;
+
+  const running = drain();
+  await atChunkOne; // the step is claimed and the handler is partway through
+
+  await engine.cancelWorkflow(id);
+  advance(30_000); // past the beat's write throttle
+  letItRun();
+  await running;
+
+  const status = await engine.getWorkflowStatus(id);
+  if (!status.ok) throw new Error(status.error.message);
+  console.log(`  → ${status.value.status}, and the abandoned attempt wrote no output:`, status.value.steps[0]?.output);
+}
+
 await waitThatExpires();
 await waitThatIsAnswered();
 await retryAfterAnOutage();
 await runDeadline();
 await heartbeats();
+await cancelMidFlight();
