@@ -1,11 +1,11 @@
 /**
  * 02 — Parallel branches + fan-in (a diamond DAG)
  *
- *        ┌── enrichA ──┐
- *  fetch ┤              ├── merge
- *        └── enrichB ──┘
+ *              ┌── enrichA ──┐
+ *  fetchRecord ┤              ├── merge
+ *              └── enrichB ──┘
  *
- * `enrichA` and `enrichB` both depend only on `fetch`, so they run in parallel. `merge` depends
+ * `enrichA` and `enrichB` both depend only on `fetchRecord`, so they run in parallel. `merge` depends
  * on both, so it waits for the slower one (automatic fan-in). No scheduling code required.
  */
 import { z } from 'zod';
@@ -14,8 +14,8 @@ import { createInMemoryRuntime } from './runtime';
 
 const inputSchema = z.object({ id: z.string() });
 
-const fetch = defineStep({
-  type: 'fetch',
+const fetchRecord = defineStep({
+  type: 'fetchRecord',
   workflowInputSchema: inputSchema,
   outputSchema: z.object({ raw: z.string() }),
   handler: async (ctx) => ({ raw: `record:${ctx.workflowInput.id}` }),
@@ -25,16 +25,16 @@ const enrichA = defineStep({
   type: 'enrichA',
   workflowInputSchema: inputSchema,
   outputSchema: z.object({ a: z.string() }),
-  dependencies: { fetch },
-  handler: async (ctx) => ({ a: `${ctx.deps.fetch.raw}+A` }),
+  dependencies: { fetchRecord },
+  handler: async (ctx) => ({ a: `${ctx.deps.fetchRecord.raw}+A` }),
 });
 
 const enrichB = defineStep({
   type: 'enrichB',
   workflowInputSchema: inputSchema,
   outputSchema: z.object({ b: z.string() }),
-  dependencies: { fetch },
-  handler: async (ctx) => ({ b: `${ctx.deps.fetch.raw}+B` }),
+  dependencies: { fetchRecord },
+  handler: async (ctx) => ({ b: `${ctx.deps.fetchRecord.raw}+B` }),
 });
 
 const merge = defineStep({
@@ -45,7 +45,7 @@ const merge = defineStep({
   handler: async (ctx) => ({ merged: `${ctx.deps.enrichA.a} & ${ctx.deps.enrichB.b}` }),
 });
 
-const wf = buildWorkflow({ type: 'diamond', inputSchema, steps: { fetch, enrichA, enrichB, merge } });
+const wf = buildWorkflow({ type: 'diamond', inputSchema, steps: { fetchRecord, enrichA, enrichB, merge } });
 
 async function main() {
   const { engine, registry, drain } = createInMemoryRuntime();
