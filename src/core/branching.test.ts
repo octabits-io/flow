@@ -22,8 +22,12 @@ function harness(opts?: { observer?: FlowObserver }) {
   const clock = { at: new Date('2026-01-01T00:00:00.000Z') };
   const queue: Array<{ payload: DispatchStepPayload; runAt: number }> = [];
 
+  /** Every enqueue ever made, including ones already drained. */
+  const dispatched: DispatchStepPayload[] = [];
+
   const dispatcher: Dispatcher = {
     async enqueueStep(payload, options) {
+      dispatched.push(payload);
       queue.push({ payload, runAt: clock.at.getTime() + (options?.startAfterSeconds ?? 0) * 1000 });
       return { ok: true, value: undefined };
     },
@@ -61,7 +65,7 @@ function harness(opts?: { observer?: FlowObserver }) {
   const statuses = async (workflowId: number) =>
     Object.fromEntries((await store.listSteps(workflowId)).map((s) => [s.key, s.status]));
 
-  return { store, registry, engine, queue, drain, advance, statuses };
+  return { store, registry, engine, queue, dispatched, drain, advance, statuses };
 }
 
 const noInput = z.object({});
@@ -287,6 +291,71 @@ describe('conditional branching', () => {
     expect((await h.statuses(started.value.workflowId)).approval).toBe('skipped');
     const final = await h.engine.getWorkflowStatus(started.value.workflowId);
     expect(final.ok && final.value.status).toBe('completed');
+  });
+
+  it('does not re-enqueue an unrelated queued step when a branch is skipped', async () => {
+    const h = harness();
+    const gate = defineStep<Record<string, never>, { go: boolean }, Ctx>({
+      type: 'd:gate',
+      workflowInputSchema: noInput,
+      outputSchema: z.object({ go: z.boolean() }),
+      handler: async () => ({ go: false }),
+    });
+    // Held in the queue, so it is still `pending` when the guard below runs.
+    const slow = defineStep<Record<string, never>, Record<string, never>, Ctx, { gate: typeof gate }>({
+      type: 'd:slow',
+      workflowInputSchema: noInput,
+      outputSchema: z.object({}) as unknown as z.ZodType<Record<string, never>>,
+      dependencies: { gate },
+      delayMs: 60_000,
+      handler: async () => ({}) as Record<string, never>,
+    });
+    const guarded = defineStep<Record<string, never>, Record<string, never>, Ctx, { gate: typeof gate }>({
+      type: 'd:guarded',
+      workflowInputSchema: noInput,
+      outputSchema: z.object({}) as unknown as z.ZodType<Record<string, never>>,
+      dependencies: { gate },
+      when: (ctx) => ctx.deps.gate.go,
+      handler: async () => ({}) as Record<string, never>,
+    });
+    const wf = buildWorkflow<Record<string, never>, Ctx>({
+      type: 'skip-dispatch',
+      inputSchema: noInput,
+      steps: { gate, slow, guarded },
+    });
+    wf.register(h.registry);
+
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) throw new Error('start failed');
+    await h.drain(); // gate completes, both branches enqueue, `guarded` is skipped
+
+    // A skip can only unblock a step that *depends* on it. Re-driving the whole
+    // ready frontier instead would put a second job on the queue for `slow`,
+    // which is still sitting there waiting out its delay.
+    //
+    // (This is narrower than "never enqueue twice": a completion always
+    // re-dispatches every ready-and-pending step, which is safe because
+    // claiming is atomic. The skip path is what must not add to that.)
+    expect((await h.statuses(started.value.workflowId)).guarded).toBe('skipped');
+    expect(h.dispatched.filter((job) => job.stepKey === 'slow')).toHaveLength(1);
+  });
+
+  it('still dispatches a join that the skip itself unblocked', async () => {
+    const h = harness();
+    const calls: string[] = [];
+    const wf = approvalWorkflow(calls, true);
+    wf.register(h.registry);
+
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) throw new Error('start failed');
+    await h.drain();
+
+    // `notify` becomes runnable only once `escalate` settles, and `escalate`
+    // settles by being skipped — so the skip is the only thing that can have
+    // dispatched it.
+    expect(calls).toEqual(['review', 'approve', 'notify']);
+    expect(h.dispatched.some((job) => job.stepKey === 'notify')).toBe(true);
+    expect((await h.statuses(started.value.workflowId)).notify).toBe('completed');
   });
 
   it('suspends a guarded wait step when the guard holds', async () => {

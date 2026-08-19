@@ -16,8 +16,13 @@
  *               └─ extractImages  ── optimizeImages (map: 6 images, concurrency-capped,
  *                                    │               one of them flaky → retried)
  *                                    ├─ renderPdf   (sub-workflow: layout → rasterize)
- *                                    └─ awaitReview (suspends for an external event)
- *                                         └─ embargo (durable sleep) ── publish
+ *                                    └─ awaitReview (suspends for an event, with a deadline)
+ *                                         ├─ embargo (durable sleep) ── publish ─┐
+ *                                         └─ escalate ───────────────────────────┴─ notifyAuthor
+ *
+ * `publish` and `escalate` are guarded by `when`, so only the branch the review chose
+ * runs; `notifyAuthor` joins with `join: 'any'` so the arm that was skipped doesn't
+ * skip the join along with it.
  *
  * The trace is printed from a `FlowObserver` — the same seam you'd wire to OpenTelemetry
  * or an events table — so every line below is an engine transition, not a console.log in
@@ -104,6 +109,12 @@ function tracer(): FlowObserver {
         case 'step.resumed':
           line(c.gr('⏵'), key, 'event delivered');
           break;
+        case 'step.skipped':
+          line(c.d('⊘'), key, 'skipped — its branch was not taken');
+          break;
+        case 'step.timedOut':
+          line(c.ye('⏱'), key, 'wait deadline reached');
+          break;
         case 'step.compensating':
           line(c.ye('↶'), key, 'rolling back');
           break;
@@ -134,7 +145,10 @@ function runtime(opts: { gate?: ReturnType<typeof createInMemoryStepGate> } = {}
     async enqueueStep(p, options) {
       const delay = options?.startAfterSeconds ?? 0;
       // Surface long durable delays so the pause in the trace reads as intent, not a hang.
-      if (delay >= 2) line(c.ye('⏲'), p.stepKey, `held in the queue for ${delay}s — durable`);
+      if (delay >= 2) {
+        if (p.kind === 'timeout') line(c.ye('⏳'), p.stepKey, `deadline armed — ${delay}s to respond`);
+        else line(c.ye('⏲'), p.stepKey, `held in the queue for ${delay}s — durable`);
+      }
       jobs.push({ p, runAt: Date.now() + delay * 1000 });
       return { ok: true, value: undefined };
     },
@@ -157,11 +171,18 @@ function runtime(opts: { gate?: ReturnType<typeof createInMemoryStepGate> } = {}
       const now = Date.now();
       const due = jobs.filter((j) => j.runAt <= now);
       if (!due.length) {
+        // Everything left is a wait deadline: either the run is parked on an
+        // external event (only the demo can move it) or it has already finished
+        // and the deadline is moot. Either way, waiting it out is dead air.
+        if (jobs.every((j) => j.p.kind === 'timeout')) {
+          jobs = [];
+          return;
+        }
         await sleep(Math.max(10, Math.min(...jobs.map((j) => j.runAt)) - now));
         continue;
       }
       jobs = jobs.filter((j) => j.runAt > now);
-      await Promise.all(due.map((j) => engine.executeStep(j.p.workflowId, j.p.stepId).catch(() => undefined)));
+      await Promise.all(due.map((j) => engine.handleStepJob(j.p).catch(() => undefined)));
     }
   }
 
@@ -195,14 +216,15 @@ function plain<O extends Record<string, unknown>>(
 }
 
 async function actOne() {
-  banner('A publishing pipeline — fan-out, sub-workflow, signal, durable sleep');
+  banner('A publishing pipeline — fan-out, sub-workflow, signal, deadline, branch');
   console.log(
     c.d(
       '   fetchDraft ─┬─ detectLanguage ── translateAll   (4 locales)\n' +
         '               └─ extractImages  ── optimizeImages (6 images, max 2 at once)\n' +
         '                                     ├─ renderPdf   (sub-workflow)\n' +
-        '                                     └─ awaitReview (external event)\n' +
-        '                                          └─ embargo (durable sleep) ── publish\n',
+        '                                     └─ awaitReview (external event, 8s deadline)\n' +
+        '                                          ├─ embargo (sleep) ─ publish ─┐\n' +
+        '                                          └─ escalate ─────────────────┴─ notifyAuthor\n',
     ),
   );
 
@@ -256,19 +278,65 @@ async function actOne() {
     input: () => ({}),
   });
 
+  // The wait cannot hang forever: if no editor answers in 8s the step completes
+  // itself with `approved: false`, and the branch below routes on that instead.
   const awaitReview = defineWaitStep({
     type: 'awaitReview',
     outputSchema: z.object({ approved: z.boolean(), by: z.string() }),
     dependencies: { renderPdf },
+    timeoutMs: 8000,
+    onTimeout: { output: { approved: false, by: 'nobody' } },
   });
 
   const embargo = defineSleepStep({ type: 'embargo', sleepMs: 4000, dependencies: { awaitReview } });
-  const publish = plain('publish', 600, z.object({ url: z.string() }), { url: '/a' }, { embargo });
+
+  // Two arms, complementary guards. Whichever one the review didn't choose is
+  // skipped — along with anything reachable only through it.
+  const publish = defineStep<any, { url: string }, unknown, any>({
+    type: 'publish',
+    workflowInputSchema: input,
+    outputSchema: z.object({ url: z.string() }),
+    dependencies: { embargo, awaitReview },
+    when: (ctx) => ctx.deps.awaitReview.approved,
+    handler: async () => {
+      await sleep(600);
+      return { url: '/a' };
+    },
+  });
+
+  const escalate = defineStep<any, { paged: string }, unknown, any>({
+    type: 'escalate',
+    workflowInputSchema: input,
+    outputSchema: z.object({ paged: z.string() }),
+    dependencies: { awaitReview },
+    when: (ctx) => !ctx.deps.awaitReview.approved,
+    handler: async () => {
+      await sleep(600);
+      return { paged: 'editor-on-call' };
+    },
+  });
+
+  // `join: 'any'` is what lets this run at all: under the default rule the
+  // skipped arm would skip the join with it.
+  const notifyAuthor = defineStep<any, { told: string }, unknown, any, 'any'>({
+    type: 'notifyAuthor',
+    workflowInputSchema: input,
+    outputSchema: z.object({ told: z.string() }),
+    dependencies: { publish, escalate },
+    join: 'any',
+    handler: async (ctx) => {
+      await sleep(500);
+      return { told: ctx.deps.publish ? 'published' : 'escalated' };
+    },
+  });
 
   const wf = buildWorkflow({
     type: 'publish-article',
     inputSchema: input,
-    steps: { fetchDraft, detectLanguage, extractImages, translateAll, optimizeImages, renderPdf, awaitReview, embargo, publish },
+    steps: {
+      fetchDraft, detectLanguage, extractImages, translateAll, optimizeImages, renderPdf,
+      awaitReview, embargo, publish, escalate, notifyAuthor,
+    },
   });
 
   // Cap the image workers: at most 2 of the 6 children run at a time.

@@ -65,11 +65,12 @@ of what it did. Both models are durable — they trade off differently, and
 
 A fuller pipeline than the snippet above — dynamic fan-out over two `map` steps at once, a
 concurrency cap so only 2 of 6 images encode at a time, a flaky step retried, a sub-workflow,
-a step suspended on an external event, and a durable sleep. Then a second workflow fails and
-its completed steps roll back in reverse.
+a step suspended on an external event under a deadline, a durable sleep, and a branch where
+the arm the review didn't choose is skipped but the join still fires. Then a second workflow
+fails and its completed steps roll back in reverse.
 
 <p align="center">
-  <img src="./docs/demo.svg" alt="Terminal trace of a publishing pipeline: parallel fan-out over locales and images with a concurrency cap, a retried step, a sub-workflow, a suspend-and-resume on an external event, a durable sleep, then a saga rollback in reverse order" width="760">
+  <img src="./docs/demo.svg" alt="Terminal trace of a publishing pipeline: parallel fan-out over locales and images with a concurrency cap, a retried step, a sub-workflow, a suspend-and-resume on an external event with a deadline armed, a durable sleep, a skipped branch converging on a join, then a saga rollback in reverse order" width="760">
 </p>
 
 Every line is an engine transition emitted through the [`FlowObserver`](https://octabits-io.github.io/octaflow/running/observability/) seam —

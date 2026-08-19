@@ -766,9 +766,9 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
             attempt: attemptNo,
             durationMs: now().getTime() - startMs,
           });
-          // Nothing completed, so nothing dispatched itself: ask for a dispatch
-          // pass, because a join downstream may be ready *because* of this skip.
-          await settle(workflowId, { dispatchReady: true });
+          // Nothing completed, so nothing dispatched itself — and a join
+          // downstream may be ready *because* of this skip.
+          await settle(workflowId, { skippedKeys: [step.key] });
           return { ok: true, value: undefined };
         }
 
@@ -939,12 +939,12 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
      */
     snapshot?: StepRecord[];
     /**
-     * Run a dispatch pass even if nothing was skipped. Needed when the caller
-     * changed a step's state *without* completing it — a `when` guard skipping a
-     * step, or `retryWorkflow` resetting a batch — because no completion
-     * transaction dispatched the frontier on their behalf.
+     * Keys of steps the caller just skipped without completing — a `when` guard
+     * declining its step. A skip can only unblock a `join: 'any'` step that
+     * depends on it, so naming them lets the dispatch pass stay narrow instead
+     * of re-driving the whole frontier.
      */
-    dispatchReady?: boolean;
+    skippedKeys?: string[];
   }
 
   /**
@@ -964,14 +964,21 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   async function settle(workflowId: WorkflowId, options?: SettleOptions): Promise<void> {
     let steps = options?.snapshot ?? (await store.listSteps(workflowId));
 
-    const skipped = await cascadeSkips(workflowId, steps);
-    if (skipped > 0) {
-      // A skip can unblock a join (`join: 'any'`), so a pass that pruned anything
-      // has to look for newly-runnable steps — and re-read, since the snapshot
-      // still shows the skipped rows as pending.
-      steps = await dispatchNewlyReady(workflowId);
-    } else if (options?.dispatchReady) {
-      steps = await dispatchNewlyReady(workflowId);
+    const skippedKeys = [...(options?.skippedKeys ?? []), ...(await cascadeSkips(workflowId, steps))];
+    if (skippedKeys.length > 0) {
+      // A skip can unblock a `join: 'any'` step — but only one that depends on
+      // something just skipped. Dispatching the whole ready frontier here would
+      // re-enqueue siblings that are already sitting in the queue: harmless,
+      // because claiming is atomic, but a duplicate job for every skip.
+      //
+      // Re-read first: the snapshot still shows the skipped rows as pending.
+      steps = await store.listSteps(workflowId);
+      const unblocked = readinessOf(steps).ready.filter((s) =>
+        (s.dependencies ?? []).some((dep) => skippedKeys.includes(dep)),
+      );
+      for (const step of unblocked) {
+        await dispatchReadyStep(workflowId, step.id, step.key, step.type, undefined);
+      }
     }
 
     await terminateIfSettled(workflowId, steps);
@@ -987,13 +994,13 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
    * cascade already ran when whatever blocked those steps settled — so it costs
    * a pure pass over rows the caller had already read.
    */
-  async function cascadeSkips(workflowId: WorkflowId, steps: StepRecord[]): Promise<number> {
+  async function cascadeSkips(workflowId: WorkflowId, steps: StepRecord[]): Promise<string[]> {
     const { skip } = readinessOf(steps);
     for (const { step, reason } of skip) {
       await store.skipStep(step.id, reason);
       emit({ type: 'step.skipped', workflowId, stepId: step.id, stepKey: step.key, stepType: step.type });
     }
-    return skip.length;
+    return skip.map(({ step }) => step.key);
   }
 
   /** Finish the workflow — completed or failed — once every step has settled. */
@@ -1514,8 +1521,9 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     logger.info('Retrying failed workflow', { workflowId, resetSteps });
     emit({ type: 'workflow.retried', workflowId, workflowType: workflow.type });
 
-    // Nothing completed to trigger a dispatch, so ask for one explicitly.
-    await settle(workflowId, { dispatchReady: true });
+    // Nothing completed to trigger a dispatch, so drive the frontier directly;
+    // settle is then only there to prune and to finish the run if it is already over.
+    await settle(workflowId, { snapshot: await dispatchNewlyReady(workflowId) });
 
     return { ok: true, value: { workflowId, resetSteps } };
   }
