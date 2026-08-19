@@ -3,7 +3,7 @@ import { z } from 'zod';
 /**
  * The wire payload for a step job. It is the flow-core `DispatchStepPayload`
  * plus the `partitionKey` — the worker needs the partition to reconstruct a
- * partition-scoped engine before calling `executeStep`.
+ * partition-scoped engine before handing the job to `engine.handleStepJob`.
  */
 export const WIRE_STEP_PAYLOAD_SCHEMA = z.object({
   partitionKey: z.string().min(1),
@@ -11,6 +11,12 @@ export const WIRE_STEP_PAYLOAD_SCHEMA = z.object({
   stepId: z.number().int().positive(),
   stepKey: z.string().min(1),
   stepType: z.string().min(1),
+  /**
+   * What the job asks for: run the step, or settle it because its wait deadline
+   * elapsed. Defaulted rather than required, so a job enqueued before wait
+   * deadlines existed still parses — and still means "run the step".
+   */
+  kind: z.enum(['execute', 'timeout']).default('execute'),
 });
 
 export type WireStepPayload = z.infer<typeof WIRE_STEP_PAYLOAD_SCHEMA>;

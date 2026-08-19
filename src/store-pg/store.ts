@@ -7,6 +7,7 @@ import type {
   FailStepParams,
   FinishWorkflowParams,
   ListWorkflowsFilters,
+  ReopenWorkflowParams,
   AddChildStep,
   WorkflowId,
   StepId,
@@ -65,6 +66,7 @@ type WorkflowRow = {
   failed_steps: number;
   metadata: Record<string, unknown> | null;
   idempotency_key: string | null;
+  deadline_at: Date | null;
   parent_workflow_id: string | null;
   parent_step_id: string | null;
   created_at: Date;
@@ -106,6 +108,7 @@ function mapWorkflow(r: WorkflowRow): WorkflowRecord {
     failedSteps: Number(r.failed_steps),
     metadata: r.metadata ?? null,
     idempotencyKey: r.idempotency_key ?? null,
+    deadlineAt: iso(r.deadline_at),
     parentWorkflowId: r.parent_workflow_id == null ? null : Number(r.parent_workflow_id),
     parentStepId: r.parent_step_id == null ? null : Number(r.parent_step_id),
     createdAt: iso(r.created_at)!,
@@ -154,8 +157,8 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
       // ON CONFLICT targets the partial unique index on (partition_key, idempotency_key).
       // A null key is excluded from the index, so unkeyed starts never conflict.
       const wfRes = await client.query<{ id: string }>(
-        `INSERT INTO ${WF} (partition_key, type, status, input, total_steps, entity_ref, idempotency_key, metadata, parent_workflow_id, parent_step_id, created_at, started_at)
-         VALUES ($1, $2, 'running', $3::jsonb, $4, $5, $6, $7::jsonb, $8, $9, $10, $10)
+        `INSERT INTO ${WF} (partition_key, type, status, input, total_steps, entity_ref, idempotency_key, metadata, parent_workflow_id, parent_step_id, created_at, started_at, deadline_at)
+         VALUES ($1, $2, 'running', $3::jsonb, $4, $5, $6, $7::jsonb, $8, $9, $10, $10, $11)
          ON CONFLICT (partition_key, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING
          RETURNING id`,
         [
@@ -169,6 +172,7 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
           params.parentWorkflowId ?? null,
           params.parentStepId ?? null,
           params.startedAt,
+          params.deadlineAt ?? null,
         ],
       );
 
@@ -245,10 +249,10 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
     );
   }
 
-  async function markStepWaiting(stepId: StepId): Promise<void> {
+  async function markStepWaiting(stepId: StepId, waitingAt: string): Promise<void> {
     await exec.query(
-      `UPDATE ${STEP} SET status = 'waiting' WHERE id = $1 AND partition_key = $2`,
-      [stepId, partitionKey],
+      `UPDATE ${STEP} SET status = 'waiting', started_at = $3 WHERE id = $1 AND partition_key = $2`,
+      [stepId, partitionKey, waitingAt],
     );
   }
 
@@ -299,6 +303,34 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
       [parentStepId, partitionKey],
     );
     return res.rows.map(mapStep);
+  }
+
+  async function deleteChildSteps(parentStepId: StepId): Promise<number> {
+    const res = await exec.query(
+      `DELETE FROM ${STEP} WHERE parent_step_id = $1 AND partition_key = $2`,
+      [parentStepId, partitionKey],
+    );
+    return res.rowCount ?? 0;
+  }
+
+  async function resetStep(stepId: StepId): Promise<void> {
+    await exec.query(
+      `UPDATE ${STEP}
+          SET status = 'pending', output = NULL, error = NULL, attempts = 0,
+              started_at = NULL, completed_at = NULL
+        WHERE id = $1 AND partition_key = $2`,
+      [stepId, partitionKey],
+    );
+  }
+
+  async function reopenWorkflow(params: ReopenWorkflowParams): Promise<void> {
+    await exec.query(
+      `UPDATE ${WF}
+          SET status = 'running', output = NULL, error = NULL, completed_at = NULL,
+              total_steps = $2, completed_steps = $3, failed_steps = $4
+        WHERE id = $1 AND partition_key = $5`,
+      [params.workflowId, params.totalSteps, params.completedSteps, params.failedSteps, partitionKey],
+    );
   }
 
   async function completeStep(params: CompleteStepParams): Promise<void> {
@@ -443,6 +475,9 @@ export function createWorkflowStore(deps: WorkflowStoreDeps): WorkflowStore {
     markStepCompensated,
     addChildSteps,
     listChildSteps,
+    deleteChildSteps,
+    resetStep,
+    reopenWorkflow,
     completeStep,
     failStep,
     skipStep,

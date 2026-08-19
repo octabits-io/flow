@@ -37,6 +37,8 @@ export interface CreateWorkflowParams {
   parentWorkflowId?: WorkflowId;
   parentStepId?: StepId;
   startedAt: string;
+  /** Absolute deadline for the run (from `StartOptions.timeoutMs`), if any. */
+  deadlineAt?: string;
   steps: CreateWorkflowStep[];
 }
 
@@ -71,6 +73,19 @@ export interface FinishWorkflowParams {
   output?: Record<string, unknown>;
   error?: string;
   completedAt: string;
+}
+
+/**
+ * Put a `failed` workflow back into flight after its steps have been reset.
+ * Counters are recomputed by the engine and passed in whole rather than
+ * adjusted, because a retry may also have dropped rows (a map parent's
+ * children) — an increment/decrement contract could not express that.
+ */
+export interface ReopenWorkflowParams {
+  workflowId: WorkflowId;
+  totalSteps: number;
+  completedSteps: number;
+  failedSteps: number;
 }
 
 export interface ListWorkflowsFilters {
@@ -143,8 +158,13 @@ export interface WorkflowStore {
   markStepRunning(stepId: StepId, startedAt: string): Promise<boolean>;
   /** Reset a step to `pending` for a scheduled retry (leaves `attempts` as-is). */
   markStepPending(stepId: StepId): Promise<void>;
-  /** Flip a ready step to `waiting` — it suspends until `resumeStep` (waitForEvent). */
-  markStepWaiting(stepId: StepId): Promise<void>;
+  /**
+   * Flip a ready step to `waiting` — it suspends until `resumeStep` (waitForEvent)
+   * or a sub-workflow child settles. `waitingAt` is stamped on `startedAt`: it is
+   * when the suspension began, which is what a wait deadline is measured from
+   * (and what a UI shows as "waiting since").
+   */
+  markStepWaiting(stepId: StepId, waitingAt: string): Promise<void>;
   /** Flip a map parent to `mapping` — it suspends until all spawned children finish. */
   markStepMapping(stepId: StepId): Promise<void>;
   /** Flip a completed step to `compensating` while its rollback handler runs. */
@@ -156,6 +176,12 @@ export interface WorkflowStore {
   addChildSteps(workflowId: WorkflowId, parentStepId: StepId, children: AddChildStep[]): Promise<StepRecord[]>;
   /** List the child steps of a map parent, ordered by creation (item order). */
   listChildSteps(parentStepId: StepId): Promise<StepRecord[]>;
+  /**
+   * Delete a map parent's child rows and report how many went. Used by
+   * `retryWorkflow`: a map parent that is re-run fans out afresh, so the
+   * previous attempt's children must not linger and be counted twice.
+   */
+  deleteChildSteps(parentStepId: StepId): Promise<number>;
   /** Flip a step to `completed`, persist output, and increment `completedSteps`. */
   completeStep(params: CompleteStepParams): Promise<void>;
   /** Flip a step to `failed`, persist error, and increment `failedSteps`. */
@@ -165,8 +191,25 @@ export interface WorkflowStore {
   /** Flip every still-pending or `waiting` step of a workflow to `skipped` (used on cancel). */
   skipPendingSteps(workflowId: WorkflowId, reason: string): Promise<void>;
 
+  /**
+   * Put a settled step back to square one so it can run again: `pending`, no
+   * output, no error, no timestamps, and `attempts` back to 0 — a **fresh retry
+   * budget**, which is the point of an operator-driven retry.
+   *
+   * Unlike `markStepPending` (an in-flight retry, which keeps the attempt count
+   * so the budget still runs out), this is only used by `retryWorkflow`.
+   */
+  resetStep(stepId: StepId): Promise<void>;
+
   /** Transition the workflow to a terminal state. */
   finishWorkflow(params: FinishWorkflowParams): Promise<void>;
+
+  /**
+   * Move a `failed` workflow back to `running` with recomputed counters,
+   * clearing its `output`, `error` and `completedAt`. The engine calls this
+   * after resetting the steps a retry should re-run.
+   */
+  reopenWorkflow(params: ReopenWorkflowParams): Promise<void>;
 
   /** List workflows (with their steps) for status/dashboard reads. */
   listWorkflows(filters: ListWorkflowsFilters): Promise<WorkflowWithSteps[]>;

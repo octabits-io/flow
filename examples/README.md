@@ -15,10 +15,12 @@ bunx tsx examples/01-in-memory-quickstart.ts
 bun examples/01-in-memory-quickstart.ts
 ```
 
-Examples **01–11** run fully in-memory (no Postgres, no queue) — they share a small driver,
-[`runtime.ts`](./runtime.ts), that builds an engine over the in-memory store and an in-process
-queue you drain. Examples **12–13** are reference wiring for Postgres + pg-boss and the AI
-add-on; they need a real database / model and are structured to copy into your app.
+Examples **01–11** and **14–16** run fully in-memory (no Postgres, no queue) — they share a
+small driver, [`runtime.ts`](./runtime.ts), that builds an engine over the in-memory store and
+an in-process queue you drain. Its queue runs on a virtual clock, so delays (retry backoff,
+durable sleep, wait deadlines) behave exactly as they would on a real queue without costing
+you the wall-clock wait. Examples **12–13** are reference wiring for Postgres + pg-boss and the
+AI add-on; they need a real database / model and are structured to copy into your app.
 
 ## Index
 
@@ -38,3 +40,5 @@ add-on; they need a real database / model and are structured to copy into your a
 | 12 | [12-postgres-pgboss-production.ts](./12-postgres-pgboss-production.ts) | pg store + gate + event sink + pg-boss + cron |
 | 13 | [13-ai-workflow.ts](./13-ai-workflow.ts) | AI add-on (instrumented model + cost) |
 | 14 | [14-live-progress.ts](./14-live-progress.ts) | FlowObserver → SSE fan-out (build your own dashboard) |
+| 15 | [15-conditional-branching.ts](./15-conditional-branching.ts) | `when` guards + a `join: 'any'` convergence |
+| 16 | [16-deadlines-and-retry.ts](./16-deadlines-and-retry.ts) | wait deadlines, run deadlines, `retryWorkflow` |

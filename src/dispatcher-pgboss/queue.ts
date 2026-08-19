@@ -70,7 +70,7 @@ export function createPgBossDispatcher(deps: PgBossDispatcherDeps): Dispatcher {
     handle?: unknown,
   ): Promise<Result<void, FlowErrorShape>> {
     try {
-      const wire: WireStepPayload = { partitionKey, ...payload };
+      const wire: WireStepPayload = { kind: 'execute', ...payload, partitionKey };
       const parsed = WIRE_STEP_PAYLOAD_SCHEMA.safeParse(wire);
       if (!parsed.success) {
         return { ok: false, error: { key: 'queue_error', message: `Invalid step payload: ${parsed.error.message}` } };

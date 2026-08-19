@@ -5,9 +5,10 @@
  * queue (pg-boss) drained by worker processes; here it's a plain array you drain in-process.
  * `drain()` runs every enqueued (and re-enqueued) step until the queue is empty.
  *
- * Note: this naive driver ignores `startAfterSeconds` (retry backoff / durable sleep delays
- * collapse to "immediate, in order"). A real dispatcher honors the delay. The *behavior*
- * (retry happens, the sleep step runs) is identical — only wall-clock timing differs.
+ * The queue runs on a **virtual clock**: `startAfterSeconds` is honoured against it, and
+ * when nothing is due `drain()` fast-forwards to the next scheduled job. So retry backoff,
+ * durable sleeps and wait deadlines all behave exactly as they would on a real queue —
+ * they just don't cost you the wall-clock wait.
  */
 import {
   createWorkflowEngine,
@@ -35,11 +36,12 @@ export function createInMemoryRuntime(opts: RuntimeOptions = {}) {
   const partitionKey = opts.partitionKey ?? 'default';
   const store = createInMemoryWorkflowStore(partitionKey);
   const registry = createStepHandlerRegistry();
-  const queue: DispatchStepPayload[] = [];
+  const clock = { at: new Date() };
+  const queue: Array<{ payload: DispatchStepPayload; runAt: number }> = [];
 
   const dispatcher: Dispatcher = {
-    async enqueueStep(payload) {
-      queue.push(payload);
+    async enqueueStep(payload, options) {
+      queue.push({ payload, runAt: clock.at.getTime() + (options?.startAfterSeconds ?? 0) * 1000 });
       return { ok: true, value: undefined };
     },
   };
@@ -53,15 +55,32 @@ export function createInMemoryRuntime(opts: RuntimeOptions = {}) {
     observer: opts.observer,
     tracer: opts.tracer,
     hooks: opts.hooks,
+    now: () => clock.at,
   });
 
-  async function drain() {
+  /**
+   * Run queued jobs until nothing is left.
+   *
+   * By default the clock fast-forwards to the next job when nothing is due yet,
+   * so retry backoff, durable sleeps and wait deadlines all resolve without the
+   * wall-clock wait. Pass `{ advanceClock: false }` to run only what is due
+   * *now* — which is how you let a step suspend and stay suspended long enough
+   * to deliver an event to it.
+   */
+  async function drain(options: { advanceClock?: boolean } = {}) {
+    const advanceClock = options.advanceClock ?? true;
     let guard = 0;
     while (queue.length) {
       if (++guard > 10_000) throw new Error('drain runaway — a step keeps re-enqueueing');
-      const job = queue.shift()!;
+      let next = 0;
+      for (let i = 1; i < queue.length; i++) if (queue[i]!.runAt < queue[next]!.runAt) next = i;
+      if (!advanceClock && queue[next]!.runAt > clock.at.getTime()) return;
+      const [job] = queue.splice(next, 1);
+      if (job!.runAt > clock.at.getTime()) clock.at = new Date(job!.runAt);
       try {
-        await engine.executeStep(job.workflowId, job.stepId);
+        // `handleStepJob`, not `executeStep`: a queue carries step runs *and* wait
+        // deadlines, and only the payload's `kind` tells them apart.
+        await engine.handleStepJob(job!.payload);
       } catch {
         // A real dispatcher would retry; the engine has already marked the step failed
         // and cascaded before re-throwing, so swallowing here is faithful.
@@ -69,5 +88,10 @@ export function createInMemoryRuntime(opts: RuntimeOptions = {}) {
     }
   }
 
-  return { store, registry, engine, queue, drain };
+  /** Move the virtual clock forward without running anything (e.g. to blow a deadline). */
+  function advance(ms: number) {
+    clock.at = new Date(clock.at.getTime() + ms);
+  }
+
+  return { store, registry, engine, queue, drain, advance, clock };
 }

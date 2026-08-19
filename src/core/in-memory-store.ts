@@ -6,6 +6,7 @@ import type {
   FailStepParams,
   FinishWorkflowParams,
   ListWorkflowsFilters,
+  ReopenWorkflowParams,
   AddChildStep,
 } from './store';
 import type { WorkflowId, StepId, WorkflowRecord, StepRecord, WorkflowWithSteps } from './types';
@@ -58,6 +59,7 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
       completedSteps: 0,
       failedSteps: 0,
       metadata: params.metadata ? clone(params.metadata) : null,
+      deadlineAt: params.deadlineAt ?? null,
       createdAt: params.startedAt,
       startedAt: params.startedAt,
       completedAt: null,
@@ -120,9 +122,12 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
     if (s) s.status = 'pending';
   }
 
-  async function markStepWaiting(stepId: StepId): Promise<void> {
+  async function markStepWaiting(stepId: StepId, waitingAt: string): Promise<void> {
     const s = steps.get(stepId);
-    if (s) s.status = 'waiting';
+    if (s) {
+      s.status = 'waiting';
+      s.startedAt = waitingAt;
+    }
   }
 
   async function markStepMapping(stepId: StepId): Promise<void> {
@@ -175,6 +180,35 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
       .filter((s) => s.parentStepId === parentStepId)
       .sort((a, b) => a.id - b.id)
       .map(clone);
+  }
+
+  async function deleteChildSteps(parentStepId: StepId): Promise<number> {
+    const doomed = Array.from(steps.values()).filter((s) => s.parentStepId === parentStepId);
+    for (const s of doomed) steps.delete(s.id);
+    return doomed.length;
+  }
+
+  async function resetStep(stepId: StepId): Promise<void> {
+    const s = steps.get(stepId);
+    if (!s) return;
+    s.status = 'pending';
+    s.output = null;
+    s.error = null;
+    s.attempts = 0;
+    s.startedAt = null;
+    s.completedAt = null;
+  }
+
+  async function reopenWorkflow(params: ReopenWorkflowParams): Promise<void> {
+    const w = workflows.get(params.workflowId);
+    if (!w) return;
+    w.status = 'running';
+    w.output = null;
+    w.error = null;
+    w.completedAt = null;
+    w.totalSteps = params.totalSteps;
+    w.completedSteps = params.completedSteps;
+    w.failedSteps = params.failedSteps;
   }
 
   async function completeStep(params: CompleteStepParams): Promise<void> {
@@ -259,6 +293,9 @@ export function createInMemoryWorkflowStore(partitionKey = 'default'): WorkflowS
     markStepCompensated,
     addChildSteps,
     listChildSteps,
+    deleteChildSteps,
+    resetStep,
+    reopenWorkflow,
     completeStep,
     failStep,
     skipStep,

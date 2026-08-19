@@ -41,6 +41,7 @@ function makeWorkflow(overrides: Partial<WorkflowWithSteps> = {}): WorkflowWithS
     error: null,
     entityRef: 'thing:42',
     idempotencyKey: 'dedup-1',
+    deadlineAt: null,
     parentWorkflowId: null,
     parentStepId: null,
     totalSteps: 1,

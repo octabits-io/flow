@@ -59,7 +59,27 @@ describe('pg-boss dispatcher (integration)', () => {
     expect(res.ok).toBe(true);
 
     const payload = await got.promise;
-    expect(payload).toEqual({ partitionKey: 'tenant-7', workflowId: 11, stepId: 22, stepKey: 'generate', stepType: 'ai:generate' });
+    expect(payload).toEqual({ partitionKey: 'tenant-7', workflowId: 11, stepId: 22, stepKey: 'generate', stepType: 'ai:generate', kind: 'execute' });
+
+    await worker.stop();
+  });
+
+  it('round-trips a wait-deadline job as its own kind', async () => {
+    const queueName = 'flow-step-timeout-kind';
+    const got = deferred<WireStepPayload>();
+
+    const worker = createPgBossStepWorker({ boss, queueName, workerOptions: { pollingIntervalSeconds: 1 } });
+    await worker.start(async (payload) => {
+      got.resolve(payload);
+    });
+
+    const dispatcher = createPgBossDispatcher({ boss, queueName, partitionKey: 'tenant-7' });
+    const res = await dispatcher.enqueueStep({ workflowId: 12, stepId: 23, stepKey: 'approval', stepType: 'wait', kind: 'timeout' });
+    expect(res.ok).toBe(true);
+
+    // The worker has to be able to tell a deadline from a run — `handleStepJob`
+    // routes on exactly this field.
+    expect(await got.promise).toMatchObject({ kind: 'timeout', stepKey: 'approval' });
 
     await worker.stop();
   });

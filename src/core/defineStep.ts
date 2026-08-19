@@ -7,12 +7,15 @@ import type {
   StepError,
   StepCompensateHandler,
   StepCompensationContext,
+  StepConditionHandler,
+  WaitTimeoutPolicy,
   RetryPolicy,
   WorkflowDefinition,
   StartOptions,
   WorkflowCreatedResult,
   FlowError,
 } from './types';
+import type { JoinRule } from './readiness';
 import { isRetryableError, explicitRetryability } from './retry';
 
 /**
@@ -46,10 +49,16 @@ export interface TypedStep<
   readonly retry?: RetryPolicy;
   /** Optional per-step wall-clock timeout in ms. */
   readonly timeoutMs?: number;
+  /** For a wait step: what a `timeoutMs` expiry does. Default `'fail'`. */
+  readonly onTimeout?: WaitTimeoutPolicy;
   /** Optional durable start delay in ms (held in the queue once the step is ready). */
   readonly delayMs?: number;
   /** When true, the step suspends (waiting) until `engine.resumeStep` delivers an event. */
   readonly waitForEvent?: boolean;
+  /** Untyped guard built from the typed `when` config — `false` skips the step. */
+  readonly condition?: StepConditionHandler<TContext>;
+  /** How this step's dependencies gate it. Default `'all'`. */
+  readonly join?: JoinRule;
   /** When true, this is a map parent — see `defineMapStep`. */
   readonly map?: boolean;
   /** For a map parent: the step type registered for per-item children. */
@@ -73,6 +82,19 @@ export type WorkflowOutput<TSteps extends Record<string, TypedStep<any, any, any
 };
 
 /**
+ * The `deps` a handler sees, given its join rule. Under `join: 'any'` the step
+ * runs on whichever branch completed, so every dependency is possibly absent —
+ * and the type says so, rather than letting a handler read `undefined` through a
+ * non-optional field.
+ */
+export type StepDeps<
+  TDeps extends Record<string, TypedStep<any, any, any, any>>,
+  TJoin extends JoinRule = 'all',
+> = TJoin extends 'any'
+  ? { [K in keyof TDeps]: StepOutput<TDeps[K]> | undefined }
+  : { [K in keyof TDeps]: StepOutput<TDeps[K]> };
+
+/**
  * Typed execution context passed to step handlers. `workflowInput` is validated
  * against the step's `workflowInputSchema`; each `deps` entry is validated against
  * its dependency's `outputSchema`.
@@ -81,6 +103,7 @@ export interface TypedStepContext<
   TInput extends Record<string, unknown>,
   TDeps extends Record<string, TypedStep<any, any, any, TContext>>,
   TContext,
+  TJoin extends JoinRule = 'all',
 > {
   workflowId: number;
   stepId: number;
@@ -88,7 +111,7 @@ export interface TypedStepContext<
   partitionKey: string;
   workflowInput: TInput;
   stepInput: Record<string, unknown>;
-  deps: { [K in keyof TDeps]: StepOutput<TDeps[K]> };
+  deps: StepDeps<TDeps, TJoin>;
   signal?: AbortSignal;
   context: TContext;
 }
@@ -98,12 +121,38 @@ interface DefineStepConfig<
   TOutput extends Record<string, unknown>,
   TDeps extends Record<string, TypedStep<any, any, any, TContext>>,
   TContext,
+  TJoin extends JoinRule = 'all',
 > {
   type: string;
   workflowInputSchema: z.ZodType<TInput>;
   outputSchema: z.ZodType<TOutput>;
   dependencies?: TDeps;
-  handler: (ctx: TypedStepContext<TInput, TDeps, TContext>) => Promise<TOutput>;
+  handler: (ctx: TypedStepContext<TInput, TDeps, TContext, TJoin>) => Promise<TOutput>;
+  /**
+   * Guard: run this step only if the predicate holds. Everything reachable only
+   * through a step whose guard said no is skipped with it, which is how a static
+   * DAG expresses a branch:
+   *
+   * ```ts
+   * const escalate = defineStep({
+   *   dependencies: { review },
+   *   when: (ctx) => !ctx.deps.review.approved,
+   *   // …
+   * });
+   * ```
+   *
+   * It sees the same validated input and dependency outputs the handler would.
+   * A guard that throws is classified like a failing handler — so a transient
+   * error retries rather than quietly pruning the branch.
+   */
+  when?: (ctx: TypedStepContext<TInput, TDeps, TContext, TJoin>) => boolean | Promise<boolean>;
+  /**
+   * How this step's dependencies gate it. Default `'all'` — every dependency
+   * must complete. Set `'any'` where conditional branches converge, so the
+   * arms that were *not* taken don't skip the join along with them; `deps` is
+   * then typed as possibly-absent per branch.
+   */
+  join?: TJoin;
   /** Optional retry policy (max attempts, backoff). */
   retry?: RetryPolicy;
   /**
@@ -116,8 +165,13 @@ interface DefineStepConfig<
    * ```
    */
   isRetryable?: (error: unknown) => boolean;
-  /** Optional per-step wall-clock timeout in ms. */
+  /**
+   * Optional wall-clock budget in ms: how long the handler may run, or — on a
+   * `waitForEvent` step — how long the step may stay suspended.
+   */
   timeoutMs?: number;
+  /** For a `waitForEvent` step: what a `timeoutMs` expiry does. Default `'fail'`. */
+  onTimeout?: WaitTimeoutPolicy;
   /** Optional durable start delay in ms — held in the queue once the step is ready. */
   delayMs?: number;
   /** When true, the step suspends (waiting) until `engine.resumeStep` delivers an event. */
@@ -127,7 +181,7 @@ interface DefineStepConfig<
    * this step (if it completed), in reverse dependency order. Receives the typed context plus
    * the step's own `output` (what to undo). Best-effort — a throw is logged + surfaced.
    */
-  compensate?: (ctx: TypedStepContext<TInput, TDeps, TContext> & { output: TOutput }) => Promise<void> | void;
+  compensate?: (ctx: TypedStepContext<TInput, TDeps, TContext, TJoin> & { output: TOutput }) => Promise<void> | void;
 }
 
 /**
@@ -147,51 +201,89 @@ export function defineStep<
   TOutput extends Record<string, unknown>,
   TContext = unknown,
   TDeps extends Record<string, TypedStep<any, any, any, TContext>> = {},
->(config: DefineStepConfig<TInput, TOutput, TDeps, TContext>): TypedStep<TInput, TOutput, TDeps, TContext> {
-  const { type, workflowInputSchema, outputSchema, dependencies, handler, retry, isRetryable, timeoutMs, delayMs, waitForEvent } = config;
+  TJoin extends JoinRule = 'all',
+>(config: DefineStepConfig<TInput, TOutput, TDeps, TContext, TJoin>): TypedStep<TInput, TOutput, TDeps, TContext> {
+  const { type, workflowInputSchema, outputSchema, dependencies, handler, retry, isRetryable, timeoutMs, delayMs, waitForEvent, join } = config;
   const deps = (dependencies ?? {}) as TDeps;
 
-  const wrappedHandler: StepHandler<TContext> = async (
-    ctx: StepExecutionContext<TContext>,
-  ): Promise<Result<Record<string, unknown>, StepError>> => {
-    try {
-      // Phase 1: workflow input
-      const inputResult = workflowInputSchema.safeParse(ctx.workflowInput);
-      if (!inputResult.success) {
+  type Ctx = TypedStepContext<TInput, TDeps, TContext, TJoin>;
+
+  /**
+   * Classify a thrown error. Precedence: an explicit marker on the error
+   * (following `cause`), then this step's predicate, then the default
+   * classifier. `retryableFrom` records which one answered, so the engine's
+   * `defaultRetryable` can override a guess without overriding a decision
+   * someone actually made.
+   */
+  const toStepError = (error: unknown): StepError => {
+    const message = error instanceof Error ? error.message : 'Unknown step error';
+    const marked = explicitRetryability(error);
+    const retryable = marked ?? (isRetryable ? isRetryable(error) : isRetryableError(error));
+    const retryableFrom = marked !== undefined ? 'explicit' : isRetryable ? 'predicate' : 'heuristic';
+    return { key: 'step_error', message, retryable, retryableFrom };
+  };
+
+  /**
+   * Phases 1–3 of the pipeline: validate the workflow input, validate each
+   * dependency's output, and assemble the typed context. Shared so the `when`
+   * guard decides on exactly the same values the handler would receive.
+   */
+  const buildTypedContext = (ctx: StepExecutionContext<TContext>): Result<Ctx, StepError> => {
+    // Phase 1: workflow input
+    const inputResult = workflowInputSchema.safeParse(ctx.workflowInput);
+    if (!inputResult.success) {
+      return {
+        ok: false,
+        error: { key: 'step_error', message: `[${type}] Invalid workflow input: ${inputResult.error.message}`, retryable: false },
+      };
+    }
+
+    // Phase 2: dependency outputs
+    const parsedDeps: Record<string, unknown> = {};
+    for (const [depKey, depStep] of Object.entries(deps)) {
+      const raw = ctx.dependencyOutputs[depKey];
+      // A `join: 'any'` step runs on whichever branch completed — the arms that
+      // were skipped have no output to offer, and that is not a schema error.
+      if (join === 'any' && raw === undefined) {
+        parsedDeps[depKey] = undefined;
+        continue;
+      }
+      const depResult = depStep.outputSchema.safeParse(raw);
+      if (!depResult.success) {
         return {
           ok: false,
-          error: { key: 'step_error', message: `[${type}] Invalid workflow input: ${inputResult.error.message}`, retryable: false },
+          error: { key: 'step_error', message: `[${type}] Invalid dependency output '${depKey}': ${depResult.error.message}`, retryable: false },
         };
       }
+      parsedDeps[depKey] = depResult.data;
+    }
 
-      // Phase 2: dependency outputs
-      const parsedDeps: Record<string, unknown> = {};
-      for (const [depKey, depStep] of Object.entries(deps)) {
-        const depResult = depStep.outputSchema.safeParse(ctx.dependencyOutputs[depKey]);
-        if (!depResult.success) {
-          return {
-            ok: false,
-            error: { key: 'step_error', message: `[${type}] Invalid dependency output '${depKey}': ${depResult.error.message}`, retryable: false },
-          };
-        }
-        parsedDeps[depKey] = depResult.data;
-      }
-
-      // Phase 3: typed context
-      const typedCtx: TypedStepContext<TInput, TDeps, TContext> = {
+    // Phase 3: typed context
+    return {
+      ok: true,
+      value: {
         workflowId: ctx.workflowId,
         stepId: ctx.stepId,
         stepKey: ctx.stepKey,
         partitionKey: ctx.partitionKey,
         workflowInput: inputResult.data,
         stepInput: ctx.stepInput,
-        deps: parsedDeps as TypedStepContext<TInput, TDeps, TContext>['deps'],
+        deps: parsedDeps as Ctx['deps'],
         signal: ctx.signal,
         context: ctx.context,
-      };
+      },
+    };
+  };
+
+  const wrappedHandler: StepHandler<TContext> = async (
+    ctx: StepExecutionContext<TContext>,
+  ): Promise<Result<Record<string, unknown>, StepError>> => {
+    try {
+      const built = buildTypedContext(ctx);
+      if (!built.ok) return built;
 
       // Phase 4: handler
-      const output = await handler(typedCtx);
+      const output = await handler(built.value);
 
       // Phase 5: output
       const outputResult = outputSchema.safeParse(output);
@@ -204,18 +296,26 @@ export function defineStep<
 
       return { ok: true, value: outputResult.data };
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown step error';
-      // Precedence: an explicit marker on the error (following `cause`), then this
-      // step's predicate, then the default classifier. `retryableFrom` records which
-      // one answered, so the engine's `defaultRetryable` can override a guess without
-      // overriding a decision someone actually made.
-      const marked = explicitRetryability(error);
-      const retryable = marked ?? (isRetryable ? isRetryable(error) : isRetryableError(error));
-      const retryableFrom =
-        marked !== undefined ? 'explicit' : isRetryable ? 'predicate' : 'heuristic';
-      return { ok: false, error: { key: 'step_error', message, retryable, retryableFrom } };
+      return { ok: false, error: toStepError(error) };
     }
   };
+
+  // The `when` guard runs the same phases 1–3, then answers yes/no. Errors come
+  // back as values so the engine can retry a flaky guard instead of treating a
+  // transient failure as "branch not taken".
+  let wrappedCondition: StepConditionHandler<TContext> | undefined;
+  if (config.when) {
+    const when = config.when;
+    wrappedCondition = async (ctx: StepExecutionContext<TContext>) => {
+      try {
+        const built = buildTypedContext(ctx);
+        if (!built.ok) return built;
+        return { ok: true, value: (await when(built.value)) === true };
+      } catch (error) {
+        return { ok: false, error: toStepError(error) };
+      }
+    };
+  }
 
   // Wrap the typed compensate (if any) into an untyped handler: re-derive the typed context
   // best-effort (don't hard-fail rollback on a stale schema), then add the step's own output.
@@ -237,7 +337,7 @@ export function defineStep<
         partitionKey: ctx.partitionKey,
         workflowInput: (input.success ? input.data : ctx.workflowInput) as TInput,
         stepInput: ctx.stepInput,
-        deps: parsedDeps as TypedStepContext<TInput, TDeps, TContext>['deps'],
+        deps: parsedDeps as Ctx['deps'],
         signal: ctx.signal,
         context: ctx.context,
         output: (out.success ? out.data : ctx.output) as TOutput,
@@ -245,7 +345,21 @@ export function defineStep<
     };
   }
 
-  return { type, workflowInputSchema, outputSchema, dependencies: deps, handler: wrappedHandler, retry, timeoutMs, delayMs, waitForEvent, compensate: wrappedCompensate };
+  return {
+    type,
+    workflowInputSchema,
+    outputSchema,
+    dependencies: deps,
+    handler: wrappedHandler,
+    retry,
+    timeoutMs,
+    onTimeout: config.onTimeout,
+    delayMs,
+    waitForEvent,
+    compensate: wrappedCompensate,
+    condition: wrappedCondition,
+    join,
+  };
 }
 
 /**
@@ -255,24 +369,53 @@ export function defineStep<
  * (validated by dependents against `outputSchema`), then the DAG advances.
  *
  * Use for human-in-the-loop approvals, webhooks, or any async external dependency.
+ *
+ * Give it a `timeoutMs` so the wait cannot last forever. What the expiry does is
+ * `onTimeout`'s call: `'fail'` (the default) ends the run, while `{ output }`
+ * completes the step with a stand-in answer and lets the DAG carry on — which,
+ * paired with a `when` guard downstream, is how "approve within 48 hours,
+ * otherwise escalate" is expressed:
+ *
+ * ```ts
+ * const approval = defineWaitStep({
+ *   type: 'await-approval',
+ *   outputSchema: z.object({ approved: z.boolean() }),
+ *   timeoutMs: 48 * 60 * 60 * 1000,
+ *   onTimeout: { output: { approved: false } },
+ * });
+ * ```
  */
 export function defineWaitStep<
   TOutput extends Record<string, unknown> = Record<string, unknown>,
   TContext = unknown,
   TDeps extends Record<string, TypedStep<any, any, any, TContext>> = {},
+  TJoin extends JoinRule = 'all',
 >(config: {
   type: string;
   /** Shape of the event payload delivered via `resumeStep`. */
   outputSchema: z.ZodType<TOutput>;
   dependencies?: TDeps;
+  /** How long the step may stay suspended before `onTimeout` settles it. */
+  timeoutMs?: number;
+  /** What a `timeoutMs` expiry does. Default `'fail'`. */
+  onTimeout?: 'fail' | { output: TOutput };
+  /** Guard: suspend on this step only if the predicate holds — see `defineStep`. */
+  when?: (ctx: TypedStepContext<Record<string, never>, TDeps, TContext, TJoin>) => boolean | Promise<boolean>;
+  /** How this step's dependencies gate it. Default `'all'` — see `defineStep`. */
+  join?: TJoin;
 }): TypedStep<Record<string, never>, TOutput, TDeps, TContext> {
-  return defineStep<Record<string, never>, TOutput, TContext, TDeps>({
+  return defineStep<Record<string, never>, TOutput, TContext, TDeps, TJoin>({
     type: config.type,
     workflowInputSchema: emptyObjectSchema,
     outputSchema: config.outputSchema,
     dependencies: config.dependencies,
     waitForEvent: true,
-    // Never invoked — a wait step is completed by resumeStep, not by running a handler.
+    timeoutMs: config.timeoutMs,
+    onTimeout: config.onTimeout,
+    when: config.when,
+    join: config.join,
+    // Never invoked — a wait step is completed by resumeStep (or its wait
+    // deadline), not by running a handler.
     handler: async () => ({}) as TOutput,
   });
 }
@@ -311,6 +454,8 @@ export function defineMapStep<
   itemIsRetryable?: (error: unknown) => boolean;
   /** Optional per-item wall-clock timeout in ms. */
   itemTimeoutMs?: number;
+  /** Guard: fan out only if the predicate holds — see `defineStep`. */
+  when?: (ctx: TypedStepContext<TWorkflowInput, TDeps, TContext>) => boolean | Promise<boolean>;
 }): TypedStep<TWorkflowInput, { items: TItemOutput[] }, TDeps, TContext> {
   const childType = `${config.type}__item`;
 
@@ -321,6 +466,7 @@ export function defineMapStep<
     workflowInputSchema: config.workflowInputSchema,
     outputSchema: z.object({ items: z.array(z.unknown()) }) as unknown as z.ZodType<{ items: unknown[] }>,
     dependencies: config.dependencies,
+    when: config.when,
     handler: async (ctx) => ({ items: await config.items(ctx) }),
   });
 
@@ -376,6 +522,8 @@ export function defineSubWorkflowStep<
   /** Shape of the child workflow's output (for typing dependents). Defaults to an opaque record. */
   outputSchema?: z.ZodType<TOutput>;
   dependencies?: TDeps;
+  /** Guard: start the child workflow only if the predicate holds — see `defineStep`. */
+  when?: (ctx: TypedStepContext<TWorkflowInput, TDeps, TContext>) => boolean | Promise<boolean>;
 }): TypedStep<TWorkflowInput, TOutput, TDeps, TContext> {
   const recordSchema = z.record(z.string(), z.unknown());
   // Parent: validates input + deps like a normal step; its "output" is the child input,
@@ -385,6 +533,7 @@ export function defineSubWorkflowStep<
     workflowInputSchema: config.workflowInputSchema,
     outputSchema: recordSchema as unknown as z.ZodType<Record<string, unknown>>,
     dependencies: config.dependencies,
+    when: config.when,
     handler: async (ctx) => config.input(ctx),
   });
 
@@ -498,12 +647,15 @@ export function buildWorkflow<
         registry.register(step.type, step.handler, {
           retry: step.retry,
           timeoutMs: step.timeoutMs,
+          onTimeout: step.onTimeout,
           delayMs: step.delayMs,
           waitForEvent: step.waitForEvent,
           map: step.map,
           childType: step.childType,
           subWorkflowDefinition: step.subWorkflowDefinition,
           compensate: step.compensate,
+          condition: step.condition,
+          join: step.join,
         });
         // A map step also registers its per-item child handler.
         if (step.childRegistration) {

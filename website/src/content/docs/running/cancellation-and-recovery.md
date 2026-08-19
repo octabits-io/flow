@@ -1,10 +1,11 @@
 ---
 title: Cancellation & recovery
-description: Stop a workflow on purpose, and clear the ones a crashed worker left behind.
+description: Stop a workflow on purpose, clear the ones a crashed worker left behind, and put a failed one back in flight.
 ---
 
-Two engine methods handle the endings that aren't "every step completed": one you
-call deliberately, one you run on a timer.
+Three engine methods handle the endings that aren't "every step completed": one you
+call deliberately, one you run on a timer, and one you reach for when a run failed for
+a reason you have since fixed.
 
 ## Cancelling a workflow
 
@@ -38,17 +39,28 @@ an atomic claim (`markStepRunning`) means a redelivered job can't take it over.
 `recoverStuckWorkflows` is the sweeper that clears them:
 
 ```ts
-const { recoveredSteps, recoveredWorkflows } = await engine.recoverStuckWorkflows();
+const { retriedSteps, recoveredSteps, recoveredWorkflows, expiredWorkflows } =
+  await engine.recoverStuckWorkflows();
 ```
 
-It scans every `running` workflow in the partition for steps that entered `running`
-longer ago than the stuck threshold, marks each one **failed**, and cascades the
-workflow to `failed` in the usual way (dependents skipped, compensation run).
+It scans every `running` workflow in the partition and does three things:
 
-:::caution
-Recovery is to a **terminal** state, not a resume. A stuck step is not re-attempted —
-it is failed, and the workflow fails with it. Set a step's `retry` policy if you want
-attempts; the sweeper is the backstop for work that will never report back at all.
+- **Re-queues a crashed step** that entered `running` longer ago than the stuck
+  threshold, provided its attempt budget has room. A dead pod costs an attempt, not the
+  run.
+- **Fails a crashed step** whose budget is spent, cascading the workflow to `failed` in
+  the usual way (dependents skipped, compensation run).
+- **Fails a run past its [deadline](/octaflow/core/deadlines/)**, which nothing else
+  would notice while the run is suspended or idle.
+
+:::caution[Your handlers must tolerate re-execution]
+A re-queued step runs again from the top, and the first attempt may have got partway
+through its side effects before the worker died. This is the same contract retries
+already impose — but it now applies to crashes too, which it did not before.
+
+If re-entering a half-finished step is worse than losing the run, set
+`config.onStuckStep: 'fail'` and a stuck step is failed outright whatever its budget
+says.
 :::
 
 Nothing calls this for you. Run it on a schedule in one process — a cron job, a
@@ -78,6 +90,7 @@ Both come from `WorkflowEngineConfig`, and both have defaults:
 |---|---|---|
 | `stepExpirySeconds` | `600` | What you told the *dispatcher* a step may occupy a worker for |
 | `stuckStepBufferSeconds` | `300` | Grace on top, so a step that is merely slow isn't swept |
+| `onStuckStep` | `'retry'` | `'retry'` re-queues within the attempt budget; `'fail'` always fails |
 
 ```ts
 const engine = createWorkflowEngine({
@@ -115,3 +128,45 @@ Closing that window is the job of
 together and the window doesn't exist. On a queue that lives elsewhere (SQS, Redis) the
 engine falls back to write-then-enqueue, and the repair path is the dispatcher
 redelivering the *completed* step's job, which re-drives readiness.
+
+## Retrying a failed run
+
+A workflow that used up its retries is `failed`, and `failed` is terminal. Starting a
+fresh run repeats every side effect the first one already committed — the charge, the
+email, the file that was written. `retryWorkflow` is the alternative: resume the
+*existing* run from where it stopped.
+
+```ts
+const retried = await engine.retryWorkflow(workflowId);
+if (!retried.ok) throw new Error(retried.error.message);
+retried.value.resetSteps;   // ['fulfil', 'notify'] — what will run again
+```
+
+Every step that **failed**, was **skipped** in the fallout, or had its work
+**compensated** away goes back to `pending` with a fresh attempt budget, its output,
+error and timestamps cleared. Steps that **completed** are left exactly as they are —
+they keep their output, and they do not run again. The workflow returns to `running`
+with recomputed counters, and the frontier is dispatched.
+
+→ [`examples/16-deadlines-and-retry.ts`](https://github.com/octabits-io/octaflow/blob/main/examples/16-deadlines-and-retry.ts)
+
+Details worth knowing:
+
+- **A compensated step *does* re-run.** Saga rollback undid its effects, so its work has
+  to happen again — that is why `compensated` is reset alongside `failed` and `skipped`.
+- **A map parent's children are dropped** before it re-runs, so it fans out afresh rather
+  than aggregating two generations of items.
+- **A guard is re-evaluated.** A step skipped by a [`when`](/octaflow/core/branching/)
+  guard is reset too, so the branch decision is made again against the current data.
+- **It refuses a run that is not `failed`.** A `completed`, `running` or `cancelled`
+  workflow returns a `workflow_not_retryable` error rather than being restarted.
+- **It refuses a sub-workflow child**, pointing you at the parent. Retrying a child
+  cannot un-fail the parent step that was waiting on it; retry the parent, and it starts
+  a fresh child.
+- **A `workflow.retried` event** is emitted for your run history.
+
+:::note[This is an operator action, not an automatic one]
+Nothing calls `retryWorkflow` for you, and it deliberately has no built-in loop — a run
+that fails for a permanent reason would retry forever. Wire it to an admin endpoint, a
+button in your dashboard, or a script; decide the policy yourself.
+:::

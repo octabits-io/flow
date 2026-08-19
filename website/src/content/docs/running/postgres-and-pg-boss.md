@@ -5,7 +5,7 @@ description: "Production wiring: the Postgres store, the pg-boss dispatcher, wor
 
 The durable setup swaps the in-memory store for Postgres and the in-process queue for pg-boss.
 **One-time:** apply the DDL. **Per process:** build the engine, start a step worker (drives
-`executeStep`), a DLQ worker (handles exhausted jobs), and optionally a cron scheduler.
+`handleStepJob`), a DLQ worker (handles exhausted jobs), and optionally a cron scheduler.
 
 ```ts
 import { Pool } from 'pg';
@@ -73,7 +73,9 @@ const worker = createPgBossStepWorker({
   },
 });
 await worker.start(async (payload) => {
-  await engine.executeStep(payload.workflowId, payload.stepId);
+  // `handleStepJob`, not `executeStep`: the queue also carries the wait deadlines of
+  // suspended steps, and only the payload's `kind` tells them apart.
+  await engine.handleStepJob(payload);
 });
 
 // DLQ worker: a job that exhausted retries — mark the step terminally failed.

@@ -78,6 +78,15 @@ signature alone doesn't express — they're documented on the interfaces in
 > atomically and report whether the caller won. A read-then-write lets two workers
 > handed the same job by an at-least-once dispatcher both run the handler.
 
+Two more worth calling out, because they look interchangeable and are not:
+
+- `markStepPending` (an in-flight retry) leaves `attempts` alone, so the budget still
+  runs out. `resetStep` (an operator retry, via `retryWorkflow`) clears it along with
+  the output, error and timestamps — a deliberate fresh start.
+- `markStepWaiting` must stamp `waitingAt` on `started_at`. That is when the suspension
+  began, and a wait deadline is measured from it; without it, a redelivered deadline job
+  cannot tell "the budget is spent" from "this step suspended again a moment ago".
+
 If you add a store, port the behavioural tests in `src/store-pg/store.test.ts`.
 
 ## The docs site

@@ -19,9 +19,17 @@ No heavy dependencies — importing this pulls in neither `pg`, `pg-boss`, nor t
 | `WorkflowEngine` *(type)* | the object `createWorkflowEngine` returns |
 | `WorkflowEngineDeps`, `WorkflowEngineConfig` *(type)* | constructor arguments |
 
-Engine methods: `validateDefinition`, `startWorkflow`, `start`, `executeStep`, `resumeStep`,
-`handleStepExhausted`, `recoverStuckWorkflows`, `cancelWorkflow`, `getWorkflowStatus`,
-`listWorkflows`.
+| `RecoverySweepResult`, `RetryWorkflowResult` *(type)* | what the recovery methods return |
+
+Engine methods: `validateDefinition`, `startWorkflow`, `start`, `handleStepJob`, `executeStep`,
+`timeoutStep`, `resumeStep`, `handleStepExhausted`, `recoverStuckWorkflows`, `retryWorkflow`,
+`cancelWorkflow`, `getWorkflowStatus`, `listWorkflows`.
+
+:::note[Workers call `handleStepJob`]
+A queue carries both step runs and the [wait deadlines](/octaflow/core/deadlines/) of
+suspended steps. `handleStepJob(payload)` routes on the payload's `kind` and calls
+`executeStep` or `timeoutStep` for you; the other two remain public for direct use and tests.
+:::
 
 ### Defining workflows
 
@@ -29,7 +37,15 @@ Engine methods: `validateDefinition`, `startWorkflow`, `start`, `executeStep`, `
 `buildWorkflow`
 
 *(type)* `TypedStep`, `TypedStepContext`, `TypedWorkflow`, `StepOutput`, `WorkflowOutput`,
-`StepDefinition`, `WorkflowDefinition`, `RetryPolicy`, `StartOptions`
+`StepDeps`, `StepDefinition`, `WorkflowDefinition`, `RetryPolicy`, `StartOptions`
+
+### Branching & deadlines
+
+*(type)* `JoinRule`, `StepConditionHandler`, `WaitTimeoutPolicy`
+
+`computeReadiness`, `isTerminalStepStatus` — the pure readiness rules behind
+[`when` and `join`](/octaflow/core/branching/); exported so a custom store's tests can assert
+against the same logic the engine uses.
 
 ### Retryability
 
@@ -41,7 +57,7 @@ Engine methods: `validateDefinition`, `startWorkflow`, `start`, `executeStep`, `
 `ok`, `err`
 
 *(type)* `Result`, `FlowError`, `FlowErrorShape`, `StepError`, `WorkflowNotFoundError`,
-`InvalidWorkflowDefinitionError`, `StepHandlerNotFoundError`
+`InvalidWorkflowDefinitionError`, `StepHandlerNotFoundError`, `WorkflowNotRetryableError`
 
 ### Store
 
@@ -49,12 +65,13 @@ Engine methods: `validateDefinition`, `startWorkflow`, `start`, `executeStep`, `
 
 *(type)* `WorkflowStore`, `TransactionalScope`, `CreateWorkflowParams`, `CreateWorkflowStep`,
 `CreatedWorkflow`, `WorkflowCreatedResult`, `CompleteStepParams`, `FailStepParams`,
-`FinishWorkflowParams`, `AddChildStep`, `ListWorkflowsFilters`, `WorkflowRecord`, `StepRecord`,
+`FinishWorkflowParams`, `ReopenWorkflowParams`, `AddChildStep`, `ListWorkflowsFilters`,
+`WorkflowRecord`, `StepRecord`,
 `WorkflowWithSteps`, `WorkflowStatus`, `StepStatus`, `WorkflowId`, `StepId`
 
 ### Dispatch
 
-*(type)* `Dispatcher`, `DispatchStepPayload`, `EnqueueOptions`
+*(type)* `Dispatcher`, `DispatchStepPayload`, `DispatchKind`, `EnqueueOptions`
 
 ### Gate
 

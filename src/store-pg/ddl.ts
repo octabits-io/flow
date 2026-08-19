@@ -23,6 +23,7 @@ ${createSchemaDdl(schema)}CREATE TABLE IF NOT EXISTS ${wf} (
   failed_steps    integer     NOT NULL DEFAULT 0,
   metadata        jsonb,
   idempotency_key text,
+  deadline_at     timestamptz,
   parent_workflow_id bigint,
   parent_step_id     bigint,
   created_at      timestamptz NOT NULL DEFAULT now(),
@@ -30,10 +31,17 @@ ${createSchemaDdl(schema)}CREATE TABLE IF NOT EXISTS ${wf} (
   completed_at    timestamptz
 );
 
+-- Additive migrations for tables created by an earlier version. CREATE TABLE
+-- IF NOT EXISTS leaves an existing table untouched, so a new column has to be
+-- added explicitly for the DDL to stay safe to re-apply on a live database.
+ALTER TABLE ${wf} ADD COLUMN IF NOT EXISTS deadline_at timestamptz;
+
 CREATE INDEX IF NOT EXISTS flow_workflow_partition_status_idx ON ${wf} (partition_key, status);
 CREATE INDEX IF NOT EXISTS flow_workflow_parent_idx          ON ${wf} (parent_workflow_id);
 CREATE INDEX IF NOT EXISTS flow_workflow_partition_type_idx   ON ${wf} (partition_key, type);
 CREATE INDEX IF NOT EXISTS flow_workflow_partition_entity_idx ON ${wf} (partition_key, entity_ref);
+-- Partial: the deadline sweep only ever looks at live runs that have one.
+CREATE INDEX IF NOT EXISTS flow_workflow_deadline_idx ON ${wf} (deadline_at) WHERE deadline_at IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS flow_workflow_idempotency_idx ON ${wf} (partition_key, idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS ${step} (

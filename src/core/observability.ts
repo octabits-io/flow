@@ -10,6 +10,8 @@ export type FlowEventType =
   | 'workflow.completed'
   | 'workflow.failed'
   | 'workflow.cancelled'
+  /** A `failed` workflow was put back in flight by `retryWorkflow`. */
+  | 'workflow.retried'
   | 'step.started'
   | 'step.completed'
   | 'step.failed'
@@ -17,6 +19,11 @@ export type FlowEventType =
   | 'step.skipped'
   | 'step.waiting'
   | 'step.resumed'
+  /**
+   * A suspended step's wait budget elapsed. Always followed by the event for
+   * what the policy did — `step.failed`, or `step.completed` for `{ output }`.
+   */
+  | 'step.timedOut'
   | 'step.mapping'
   | 'step.compensating'
   | 'step.compensated';

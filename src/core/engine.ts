@@ -2,7 +2,9 @@ import type { Result } from './result';
 import type { Logger } from './logger';
 import { noopLogger } from './logger';
 import type { WorkflowStore, TransactionalScope } from './store';
-import type { Dispatcher } from './dispatcher';
+import type { Dispatcher, DispatchStepPayload } from './dispatcher';
+import type { JoinRule } from './readiness';
+import { computeReadiness, isTerminalStepStatus } from './readiness';
 import type { StepGate } from './gate';
 import type { WorkflowHooks } from './hooks';
 import type { FlowObserver, FlowTracer, FlowEvent } from './observability';
@@ -90,6 +92,9 @@ function reverseTopologicalOrder(steps: StepRecord[]): StepRecord[] {
   return topo.reverse();
 }
 
+/** Recorded on a step its `when` guard declined to run. */
+const CONDITION_NOT_MET = 'Skipped: condition not met';
+
 // ============================================================================
 // Dependencies
 // ============================================================================
@@ -99,6 +104,17 @@ export interface WorkflowEngineConfig {
   stepExpirySeconds?: number;
   /** Extra grace added to the stuck threshold beyond `stepExpirySeconds`. Default 300. */
   stuckStepBufferSeconds?: number;
+  /**
+   * What `recoverStuckWorkflows` does with a step whose worker died mid-run.
+   *
+   * - `'retry'` (default) — put it back on the queue if its attempt budget has
+   *   room, and only fail it once that budget is spent. A crashed pod costs an
+   *   attempt, not the whole run. **The handler must tolerate re-execution**
+   *   after a partial run, which is the same contract retries already impose.
+   * - `'fail'` — fail the step outright, whatever the budget says. Choose this
+   *   when re-entering a half-finished step is worse than losing the run.
+   */
+  onStuckStep?: 'retry' | 'fail';
   /**
    * Retryability for failures nothing authoritative classified — i.e. where the
    * default classifier fell back to guessing from the error's shape and message.
@@ -135,6 +151,29 @@ export interface WorkflowEngineDeps<TContext = unknown> {
 }
 
 // ============================================================================
+// Result shapes
+// ============================================================================
+
+/** What one sweep of `recoverStuckWorkflows` did. */
+export interface RecoverySweepResult {
+  /** Stuck steps put back on the queue for another attempt. */
+  retriedSteps: number;
+  /** Stuck steps failed outright — attempt budget spent, or `onStuckStep: 'fail'`. */
+  recoveredSteps: number;
+  /** Workflows a failed step pushed towards `failed`. */
+  recoveredWorkflows: number;
+  /** Workflows failed for outliving `StartOptions.timeoutMs`. */
+  expiredWorkflows: number;
+}
+
+/** What `retryWorkflow` put back in flight. */
+export interface RetryWorkflowResult {
+  workflowId: WorkflowId;
+  /** Keys of the steps reset to `pending` — the work that will run again. */
+  resetSteps: string[];
+}
+
+// ============================================================================
 // Factory
 // ============================================================================
 
@@ -149,6 +188,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
   const stepExpirySeconds = deps.config?.stepExpirySeconds ?? 600;
   const stuckStepBufferSeconds = deps.config?.stuckStepBufferSeconds ?? 300;
   const defaultRetryable = deps.config?.defaultRetryable;
+  const onStuckStep = deps.config?.onStuckStep ?? 'retry';
   /**
    * Both halves must opt in: the store has to offer a transaction and the
    * dispatcher has to be able to enqueue inside it. When they do, a state change
@@ -199,10 +239,68 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     return registry.getRegistration(stepType)?.waitForEvent === true;
   }
 
+  /** A step type's join rule — how its dependencies gate it. */
+  function joinOf(stepType: string): JoinRule {
+    return registry.getRegistration(stepType)?.join ?? 'all';
+  }
+
+  /** Readiness over a workflow's steps, resolving join rules through the registry. */
+  function readinessOf(steps: StepRecord[]) {
+    return computeReadiness(steps, joinOf);
+  }
+
+  /**
+   * Suspend a step and start its wait deadline (if the type declares one).
+   * Shared by the `waitForEvent` and sub-workflow paths — both park a step until
+   * something outside the engine settles it.
+   */
+  async function suspendStep(
+    workflowId: WorkflowId,
+    stepId: StepId,
+    stepKey: string,
+    stepType: string,
+    st: WorkflowStore = store,
+  ): Promise<void> {
+    await st.markStepWaiting(stepId, nowIso());
+    logger.info('Step is waiting for an event', { workflowId, stepId, stepKey });
+    emit({ type: 'step.waiting', workflowId, stepId, stepKey, stepType });
+    await scheduleWaitTimeout(workflowId, stepId, stepKey, stepType);
+  }
+
+  /**
+   * Enqueue the job that settles a suspended step if nothing else does first.
+   * It rides the same durable delay a sleep step uses, so the deadline survives
+   * a restart. Firing early, or after the step already resumed, is harmless —
+   * {@link timeoutStep} re-checks both.
+   */
+  async function scheduleWaitTimeout(
+    workflowId: WorkflowId,
+    stepId: StepId,
+    stepKey: string,
+    stepType: string,
+    afterMs?: number,
+  ): Promise<void> {
+    const budgetMs = afterMs ?? registry.getRegistration(stepType)?.timeoutMs;
+    if (!budgetMs || budgetMs <= 0) return;
+    const result = await dispatcher.enqueueStep(
+      { workflowId, stepId, stepKey, stepType, kind: 'timeout' },
+      { startAfterSeconds: Math.ceil(budgetMs / 1000) },
+    );
+    if (!result.ok) {
+      // The step stays suspended; without its deadline job it simply waits
+      // indefinitely, so this is loud rather than fatal.
+      logger.error('Failed to schedule wait timeout', new Error(result.error.message), { workflowId, stepId, stepKey });
+    }
+  }
+
   /**
    * Make a newly-ready step runnable: a `waitForEvent` step suspends (status `waiting`)
    * and awaits `resumeStep`; everything else is enqueued (with any durable delay).
    * Returns whether the step was enqueued.
+   *
+   * A wait step carrying a `when` guard is the exception — it is dispatched like
+   * any other step so the guard gets a chance to skip it, and `executeStep`
+   * suspends it from there once the guard passes.
    */
   async function dispatchReadyStep(
     workflowId: WorkflowId,
@@ -212,13 +310,11 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     scope?: TransactionalScope,
   ): Promise<boolean> {
     const st = scope?.store ?? store;
-    if (isWaitStep(stepType)) {
-      await st.markStepWaiting(stepId);
-      logger.info('Step is waiting for an event', { workflowId, stepId, stepKey });
-      emit({ type: 'step.waiting', workflowId, stepId, stepKey, stepType });
+    if (isWaitStep(stepType) && !registry.getRegistration(stepType)?.condition) {
+      await suspendStep(workflowId, stepId, stepKey, stepType, st);
       return false;
     }
-    const payload = { workflowId, stepId, stepKey, stepType };
+    const payload: DispatchStepPayload = { workflowId, stepId, stepKey, stepType };
     const delay = readyStepDelay(stepType);
     // Inside a transaction the job is written through the same handle as the
     // state change, so both commit or neither does.
@@ -336,6 +432,10 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       parentWorkflowId: options?.parentWorkflowId,
       parentStepId: options?.parentStepId,
       startedAt: nowIso(),
+      deadlineAt:
+        options?.timeoutMs && options.timeoutMs > 0
+          ? new Date(now().getTime() + options.timeoutMs).toISOString()
+          : undefined,
       steps: steps.map((s) => ({
         key: s.key,
         type: s.type,
@@ -375,6 +475,17 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     return { ok: true, value: { workflowId, totalSteps: steps.length, enqueuedSteps: enqueuedStepKeys } };
   }
 
+  /**
+   * Route one dispatched job to what it asks for. Point your worker at this
+   * rather than `executeStep` — a queue carries both step runs and wait
+   * deadlines, and only the payload's `kind` tells them apart.
+   */
+  function handleStepJob(payload: DispatchStepPayload): Promise<Result<void, FlowError>> {
+    return payload.kind === 'timeout'
+      ? timeoutStep(payload.workflowId, payload.stepId)
+      : executeStep(payload.workflowId, payload.stepId);
+  }
+
   /** Type-safe start: duck-types on `{ inputSchema, definition }`. */
   function start<TInput extends Record<string, unknown>>(
     workflow: { inputSchema: { parse(v: unknown): TInput }; definition: WorkflowDefinition },
@@ -397,6 +508,12 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       return { ok: true, value: undefined };
     }
 
+    // The run's own deadline, enforced at the last moment before work starts.
+    if (await expireIfPastDeadline(workflow)) {
+      logger.info('Skipping step for expired workflow', { workflowId, stepId });
+      return { ok: true, value: undefined };
+    }
+
     const step = await store.getStep(stepId);
     if (!step || step.workflowId !== workflowId) {
       return { ok: false, error: { key: 'workflow_not_found', message: `Step ${stepId} not found` } };
@@ -416,7 +533,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       if (step.status === 'completed' && workflowLive) {
         logger.info('Re-driving advance for a redelivered completed step', { workflowId, stepId, stepKey: step.key });
         if (step.parentStepId != null) await advanceAfterChildCompleted(workflowId, step);
-        else await advanceAfterStepCompleted(workflowId, stepId, step.output ?? {});
+        else await advanceAfterStepCompleted(workflowId);
         return { ok: true, value: undefined };
       }
       logger.info('Skipping already-processed step', { workflowId, stepId, stepKey: step.key, status: step.status });
@@ -457,14 +574,19 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       const dependencyOutputs: Record<string, unknown> = {};
       const stepDeps = step.dependencies ?? [];
       if (stepDeps.length > 0) {
+        // A `join: 'any'` step runs on the branch that completed, so the arms
+        // that were skipped are expected here — they just contribute no output.
+        const tolerateSkipped = joinOf(step.type) === 'any';
         const allSteps = await store.listSteps(workflowId);
         for (const depKey of stepDeps) {
           const depStep = allSteps.find((s) => s.key === depKey);
-          if (!depStep || depStep.status !== 'completed') {
-            logger.error('Step dependency not completed', new Error(`Dependency '${depKey}' is ${depStep?.status ?? 'missing'}`), { workflowId, stepId });
-            return { ok: false, error: { key: 'step_error', message: `Dependency '${depKey}' is not completed` } };
+          if (depStep?.status === 'completed') {
+            dependencyOutputs[depKey] = depStep.output ?? undefined;
+            continue;
           }
-          dependencyOutputs[depKey] = depStep.output ?? undefined;
+          if (tolerateSkipped && depStep?.status === 'skipped') continue;
+          logger.error('Step dependency not completed', new Error(`Dependency '${depKey}' is ${depStep?.status ?? 'missing'}`), { workflowId, stepId });
+          return { ok: false, error: { key: 'step_error', message: `Dependency '${depKey}' is not completed` } };
         }
       }
 
@@ -506,7 +628,41 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
           context,
         };
 
-        const handlerResult = await runWithTimeout(handler, ctx, timeoutMs, abort);
+        // Guard: `when` decides whether this step runs at all. Evaluated here —
+        // after the claim, with dependency outputs resolved — so it sees exactly
+        // what the handler would, and so a guard that throws is classified (and
+        // retried) like a failing handler instead of silently pruning a branch.
+        const guard = registration.condition ? await registration.condition(ctx) : undefined;
+
+        if (guard?.ok && !guard.value) {
+          await store.skipStep(stepId, CONDITION_NOT_MET);
+          logger.info('Step skipped: condition not met', { workflowId, stepId, stepKey: step.key });
+          emit({
+            type: 'step.skipped',
+            workflowId,
+            workflowType: workflow.type,
+            stepId,
+            stepKey: step.key,
+            stepType: step.type,
+            attempt: attemptNo,
+            durationMs: now().getTime() - startMs,
+          });
+          // Nothing completed, so nothing dispatched itself: ask for a dispatch
+          // pass, because a join downstream may be ready *because* of this skip.
+          await settle(workflowId, { dispatchReady: true });
+          return { ok: true, value: undefined };
+        }
+
+        // The guard passed on a suspending step — park it now. `resumeStep`, or
+        // the wait deadline, settles it from here. (A wait step with no guard
+        // never gets dispatched at all; it suspends at readiness.)
+        if (guard?.ok && registration.waitForEvent) {
+          await suspendStep(workflowId, stepId, step.key, step.type);
+          return { ok: true, value: undefined };
+        }
+
+        const handlerResult: Result<Record<string, unknown>, StepError> =
+          guard && !guard.ok ? guard : await runWithTimeout(handler, ctx, timeoutMs, abort);
 
         if (handlerResult.ok) {
           // Map parent: the handler returned the item list — spawn children, don't complete.
@@ -614,9 +770,9 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     // adapters support it — otherwise a crash between them strands the dependents.
     const snapshot = await withDispatchScope(async (scope) => {
       await (scope?.store ?? store).completeStep({ workflowId, stepId, output, completedAt: nowIso() });
-      return dispatchNewlyReady(workflowId, stepId, scope);
+      return dispatchNewlyReady(workflowId, scope);
     });
-    await finalizeAfterStepCompleted(workflowId, stepId, output, snapshot);
+    await settle(workflowId, { snapshot });
   }
 
   /**
@@ -625,93 +781,141 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
    * recovery branch in {@link executeStep}. Idempotent: dispatching a step that
    * is already queued is harmless, because claiming it is atomic.
    */
-  async function advanceAfterStepCompleted(workflowId: WorkflowId, stepId: StepId, output: Record<string, unknown>): Promise<void> {
-    const snapshot = await withDispatchScope((scope) => dispatchNewlyReady(workflowId, stepId, scope));
-    await finalizeAfterStepCompleted(workflowId, stepId, output, snapshot);
-  }
-
-  interface AdvanceSnapshot {
-    keyedSteps: StepRecord[];
-    newlyReadyCount: number;
+  async function advanceAfterStepCompleted(workflowId: WorkflowId): Promise<void> {
+    const snapshot = await withDispatchScope((scope) => dispatchNewlyReady(workflowId, scope));
+    await settle(workflowId, { snapshot });
   }
 
   /**
    * Transactional half: read readiness and dispatch whatever just became ready.
    * Contains only store writes and enqueues — never user code.
+   *
+   * Returns the step rows it read. They were read *after* the write that
+   * prompted this call, so {@link settle} can reuse them instead of paying for a
+   * second read of the same rows on the hot path.
    */
-  async function dispatchNewlyReady(
-    workflowId: WorkflowId,
-    stepId: StepId,
-    scope?: TransactionalScope,
-  ): Promise<AdvanceSnapshot> {
+  async function dispatchNewlyReady(workflowId: WorkflowId, scope?: TransactionalScope): Promise<StepRecord[]> {
     const st = scope?.store ?? store;
-    const allSteps = await st.listSteps(workflowId);
-    // Map children are internal — only keyed DAG steps drive readiness/termination.
-    const keyedSteps = allSteps.filter((s) => s.parentStepId == null);
-    const completedKeys = new Set(keyedSteps.filter((s) => s.status === 'completed').map((s) => s.key));
-
-    // Steps whose dependencies are now all complete
-    const newlyReady = keyedSteps.filter((s) => {
-      if (s.status !== 'pending') return false;
-      return (s.dependencies ?? []).every((dep) => completedKeys.has(dep));
-    });
-
-    for (const readyStep of newlyReady) {
+    const steps = await st.listSteps(workflowId);
+    for (const readyStep of readinessOf(steps).ready) {
       await dispatchReadyStep(workflowId, readyStep.id, readyStep.key, readyStep.type, scope);
     }
-    return { keyedSteps, newlyReadyCount: newlyReady.length };
+    return steps;
+  }
+
+  interface SettleOptions {
+    /**
+     * Step rows already read after the transition that prompted this settle.
+     * Saves a re-read; omit when the caller has no fresh view.
+     */
+    snapshot?: StepRecord[];
+    /**
+     * Run a dispatch pass even if nothing was skipped. Needed when the caller
+     * changed a step's state *without* completing it — a `when` guard skipping a
+     * step, or `retryWorkflow` resetting a batch — because no completion
+     * transaction dispatched the frontier on their behalf.
+     */
+    dispatchReady?: boolean;
   }
 
   /**
-   * Non-transactional half: decide whether the workflow is now failed or done.
-   * Deliberately outside any transaction — the failure path runs saga
+   * The one thing that happens after *any* step transition: prune what can no
+   * longer run, dispatch what became runnable as a result, and finish the
+   * workflow once nothing is left moving.
+   *
+   * Completion, failure, conditional skip and operator retry all funnel through
+   * here, so they cannot disagree about when a run is over — an earlier split
+   * between a "completion path" and a "failure path" could strand a workflow in
+   * `running` when a parallel branch failed while its sibling was in flight,
+   * because each path saw the other's step as non-terminal and waited.
+   *
+   * Deliberately outside any transaction: the failure route runs saga
    * compensation, i.e. user handlers that may do network I/O.
    */
-  async function finalizeAfterStepCompleted(
-    workflowId: WorkflowId,
-    stepId: StepId,
-    output: Record<string, unknown>,
-    { keyedSteps, newlyReadyCount }: AdvanceSnapshot,
-  ): Promise<void> {
-    // A sibling branch may have failed while this step was in flight — the
-    // workflow can never complete, so route through the failure path (it
-    // finalizes once every remaining step settles). Without this, a workflow
-    // whose LAST in-flight step completes after an earlier parallel failure
-    // is stranded in `running` forever: the failure path saw a non-terminal
-    // step and waited, and this completion path would treat the failed step
-    // as non-terminal and wait too. (The map-child path already re-checks —
-    // see onChildCompleted.)
-    if (keyedSteps.some((s) => s.id !== stepId && s.status === 'failed')) {
-      await checkWorkflowFailure(workflowId);
+  async function settle(workflowId: WorkflowId, options?: SettleOptions): Promise<void> {
+    let steps = options?.snapshot ?? (await store.listSteps(workflowId));
+
+    const skipped = await cascadeSkips(workflowId, steps);
+    if (skipped > 0) {
+      // A skip can unblock a join (`join: 'any'`), so a pass that pruned anything
+      // has to look for newly-runnable steps — and re-read, since the snapshot
+      // still shows the skipped rows as pending.
+      steps = await dispatchNewlyReady(workflowId);
+    } else if (options?.dispatchReady) {
+      steps = await dispatchNewlyReady(workflowId);
+    }
+
+    await terminateIfSettled(workflowId, steps);
+  }
+
+  /**
+   * Skip every step that can no longer run — a dependency failed, or the branch
+   * it sits on was not taken. Cascades transitively (a→b→c: failing `a` skips
+   * `b`, then `c`), respecting each step's join rule so a `join: 'any'` step is
+   * not pruned just because one arm was skipped.
+   *
+   * On an ordinary completion this decides nothing and writes nothing — the
+   * cascade already ran when whatever blocked those steps settled — so it costs
+   * a pure pass over rows the caller had already read.
+   */
+  async function cascadeSkips(workflowId: WorkflowId, steps: StepRecord[]): Promise<number> {
+    const { skip } = readinessOf(steps);
+    for (const { step, reason } of skip) {
+      await store.skipStep(step.id, reason);
+      emit({ type: 'step.skipped', workflowId, stepId: step.id, stepKey: step.key, stepType: step.type });
+    }
+    return skip.length;
+  }
+
+  /** Finish the workflow — completed or failed — once every step has settled. */
+  async function terminateIfSettled(workflowId: WorkflowId, steps: StepRecord[]): Promise<void> {
+    // Cheapest check first: on all but the last transition of a run this is
+    // false, and the method costs no I/O at all.
+    //
+    // Map children count here even though they never drive readiness: a map
+    // parent can fail while one of its items is still in flight, and finishing
+    // the workflow out from under that item would lose its outcome.
+    if (!steps.every((s) => isTerminalStepStatus(s.status))) return;
+
+    const workflow = await store.getWorkflow(workflowId);
+    // Already terminal (cancelled, expired, or finished by a concurrent settle).
+    if (!workflow || (workflow.status !== 'running' && workflow.status !== 'pending')) return;
+
+    const keyedSteps = steps.filter((s) => s.parentStepId == null);
+    const firstFailed = steps.find((s) => s.status === 'failed');
+
+    if (firstFailed) {
+      const error = firstFailed.error ?? 'One or more steps failed';
+      await store.finishWorkflow({ workflowId, status: 'failed', error, completedAt: nowIso() });
+      logger.info('Workflow failed', { workflowId });
+      emit({ type: 'workflow.failed', workflowId, error });
+      // Undo completed steps' side effects in reverse order, then…
+      await compensateWorkflow(workflowId);
+      // …propagate failure to the parent step if this is a sub-workflow child.
+      await bridgeSubWorkflow(workflowId);
       return;
     }
 
-    // All terminal (treat the just-completed step as completed even though listSteps may be stale)
-    const allTerminal = keyedSteps.every((s) => s.id === stepId || s.status === 'completed' || s.status === 'skipped');
-    if (allTerminal && newlyReadyCount === 0) {
-      const aggregatedOutput: Record<string, unknown> = {};
-      for (const s of keyedSteps) {
-        if (s.status === 'completed' || s.id === stepId) {
-          aggregatedOutput[s.key] = s.id === stepId ? output : (s.output ?? null);
-        }
-      }
-      await store.finishWorkflow({ workflowId, status: 'completed', output: aggregatedOutput, completedAt: nowIso() });
-      logger.info('Workflow completed', { workflowId });
-      emit({ type: 'workflow.completed', workflowId });
-
-      if (hooks.onWorkflowCompleted) {
-        const finalWorkflow = await store.getWorkflow(workflowId);
-        if (finalWorkflow) {
-          // Fire-and-forget: never block / fail completion on bookkeeping
-          Promise.resolve(hooks.onWorkflowCompleted({ workflowId, partitionKey, workflow: finalWorkflow })).catch((e) =>
-            logger.error('onWorkflowCompleted hook failed', e instanceof Error ? e : new Error(String(e)), { workflowId }),
-          );
-        }
-      }
-
-      // If this workflow is a sub-workflow child, settle its parent step.
-      await bridgeSubWorkflow(workflowId);
+    const aggregatedOutput: Record<string, unknown> = {};
+    for (const s of keyedSteps) {
+      if (s.status === 'completed') aggregatedOutput[s.key] = s.output ?? null;
     }
+    await store.finishWorkflow({ workflowId, status: 'completed', output: aggregatedOutput, completedAt: nowIso() });
+    logger.info('Workflow completed', { workflowId });
+    emit({ type: 'workflow.completed', workflowId });
+
+    if (hooks.onWorkflowCompleted) {
+      const finalWorkflow = await store.getWorkflow(workflowId);
+      if (finalWorkflow) {
+        // Fire-and-forget: never block / fail completion on bookkeeping
+        Promise.resolve(hooks.onWorkflowCompleted({ workflowId, partitionKey, workflow: finalWorkflow })).catch((e) =>
+          logger.error('onWorkflowCompleted hook failed', e instanceof Error ? e : new Error(String(e)), { workflowId }),
+        );
+      }
+    }
+
+    // If this workflow is a sub-workflow child, settle its parent step.
+    await bridgeSubWorkflow(workflowId);
   }
 
   // --------------------------------------------------------------------------
@@ -762,7 +966,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     if (children.some((c) => c.status === 'failed')) {
       // The map already failed (a sibling errored) — re-check so the failure finalizes
       // the workflow once the remaining in-flight children settle.
-      await checkWorkflowFailure(workflowId);
+      await settle(workflowId);
       return;
     }
     if (children.every((c) => c.status === 'completed')) {
@@ -787,7 +991,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     if (step.parentStepId != null) {
       await failMapParent(workflowId, step.parentStepId, `Map item failed: ${message}`);
     }
-    await checkWorkflowFailure(workflowId);
+    await settle(workflowId);
   }
 
   // --------------------------------------------------------------------------
@@ -802,8 +1006,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     childInput: Record<string, unknown>,
   ): Promise<void> {
     // Suspend first so the child's terminal bridge always finds the parent step `waiting`.
-    await store.markStepWaiting(parentStep.id);
-    emit({ type: 'step.waiting', workflowId, stepId: parentStep.id, stepKey: parentStep.key, stepType: parentStep.type });
+    await suspendStep(workflowId, parentStep.id, parentStep.key, parentStep.type);
     const started = await startWorkflow(childDefinition, childInput, {
       parentWorkflowId: workflowId,
       parentStepId: parentStep.id,
@@ -832,7 +1035,7 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
       await onStepCompleted(child.parentWorkflowId, child.parentStepId, child.output ?? {});
     } else {
       await markStepFailed(child.parentStepId, child.parentWorkflowId, `Sub-workflow ${child.status}${child.error ? `: ${child.error}` : ''}`);
-      await checkWorkflowFailure(child.parentWorkflowId);
+      await settle(child.parentWorkflowId);
     }
     logger.info('Bridged sub-workflow to parent step', { childWorkflowId, parentWorkflowId: child.parentWorkflowId, status: child.status });
   }
@@ -892,37 +1095,89 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     await store.failStep({ workflowId, stepId, error: errorMessage, completedAt: nowIso() });
   }
 
-  async function checkWorkflowFailure(workflowId: WorkflowId): Promise<void> {
-    // Skip pending steps blocked by a failed OR already-skipped dependency,
-    // iterating to a fixpoint so failures cascade transitively through a chain
-    // (a→b→c: failing `a` skips `b`, then `c` which depends on the skipped `b`).
-    for (;;) {
-      const steps = await store.listSteps(workflowId);
-      const blockedKeys = new Set(
-        steps.filter((s) => s.status === 'failed' || s.status === 'skipped').map((s) => s.key),
-      );
-      const toSkip = steps.filter(
-        (s) => s.status === 'pending' && (s.dependencies ?? []).some((dep) => blockedKeys.has(dep)),
-      );
-      if (toSkip.length === 0) break;
-      for (const s of toSkip) {
-        await store.skipStep(s.id, 'Skipped due to failed dependency');
-        emit({ type: 'step.skipped', workflowId, stepId: s.id, stepKey: s.key, stepType: s.type });
+  // --------------------------------------------------------------------------
+  // Deadlines
+  // --------------------------------------------------------------------------
+
+  /**
+   * A suspended step's wait budget elapsed. Settles it per the type's
+   * `onTimeout` policy — unless something already did, which is the common case
+   * (the event arrived, the workflow was cancelled) and a plain no-op.
+   *
+   * Delivered by the dispatcher as a `kind: 'timeout'` job, so it is subject to
+   * the same at-least-once redelivery as everything else: the elapsed-time
+   * re-check below makes an early or duplicate delivery harmless.
+   */
+  async function timeoutStep(workflowId: WorkflowId, stepId: StepId): Promise<Result<void, FlowError>> {
+    const workflow = await store.getWorkflow(workflowId);
+    if (!workflow) return { ok: false, error: { key: 'workflow_not_found', message: `Workflow ${workflowId} not found` } };
+    if (workflow.status !== 'running' && workflow.status !== 'pending') return { ok: true, value: undefined };
+
+    const step = await store.getStep(stepId);
+    if (!step || step.workflowId !== workflowId) {
+      return { ok: false, error: { key: 'workflow_not_found', message: `Step ${stepId} not found` } };
+    }
+    if (step.status !== 'waiting') {
+      logger.info('Ignoring wait timeout for a step that already settled', { workflowId, stepId, stepKey: step.key, status: step.status });
+      return { ok: true, value: undefined };
+    }
+
+    const budgetMs = registry.getRegistration(step.type)?.timeoutMs;
+    if (!budgetMs || budgetMs <= 0) return { ok: true, value: undefined };
+
+    // The suspension may be younger than the job that just fired — a redelivery,
+    // or a step that was reset and suspended again after the deadline was
+    // scheduled. Re-arm for what is actually left rather than firing early.
+    const waitingSince = step.startedAt ? Date.parse(step.startedAt) : Number.NaN;
+    if (!Number.isNaN(waitingSince)) {
+      const remainingMs = waitingSince + budgetMs - now().getTime();
+      if (remainingMs > 0) {
+        logger.info('Wait timeout fired early — re-arming', { workflowId, stepId, stepKey: step.key, remainingMs });
+        await scheduleWaitTimeout(workflowId, stepId, step.key, step.type, remainingMs);
+        return { ok: true, value: undefined };
       }
     }
 
-    const refreshed = await store.listSteps(workflowId);
-    const allTerminal = refreshed.every((s) => ['completed', 'failed', 'skipped'].includes(s.status));
-    if (allTerminal) {
-      const firstFailed = refreshed.find((s) => s.status === 'failed');
-      await store.finishWorkflow({ workflowId, status: 'failed', error: firstFailed?.error ?? 'One or more steps failed', completedAt: nowIso() });
-      logger.info('Workflow failed', { workflowId });
-      emit({ type: 'workflow.failed', workflowId, error: firstFailed?.error ?? 'One or more steps failed' });
-      // Undo completed steps' side effects in reverse order, then…
-      await compensateWorkflow(workflowId);
-      // …propagate failure to the parent step if this is a sub-workflow child.
-      await bridgeSubWorkflow(workflowId);
+    const policy = registry.getRegistration(step.type)?.onTimeout ?? 'fail';
+    const message = `Step waited longer than ${budgetMs}ms for an event`;
+    logger.info('Wait timed out', { workflowId, stepId, stepKey: step.key, policy: policy === 'fail' ? 'fail' : 'continue' });
+    emit({ type: 'step.timedOut', workflowId, workflowType: workflow.type, stepId, stepKey: step.key, stepType: step.type, error: message });
+
+    if (policy === 'fail') {
+      emit({ type: 'step.failed', workflowId, workflowType: workflow.type, stepId, stepKey: step.key, stepType: step.type, error: message });
+      await failStepTerminal(workflowId, step, message);
+      return { ok: true, value: undefined };
     }
+
+    // `{ output }`: the wait ends in a defined answer and the DAG carries on —
+    // a downstream `when` guard is what turns that into an escalation branch.
+    emit({ type: 'step.completed', workflowId, workflowType: workflow.type, stepId, stepKey: step.key, stepType: step.type });
+    await onStepCompleted(workflowId, stepId, policy.output);
+    return { ok: true, value: undefined };
+  }
+
+  /**
+   * Fail a workflow that has outlived its `StartOptions.timeoutMs`. Returns
+   * whether it did, so callers can bail out of whatever they were about to do.
+   *
+   * A step already `running` is not interrupted — the engine cannot reach into
+   * another worker's process — but its completion will find the workflow
+   * terminal and go no further.
+   */
+  async function expireIfPastDeadline(workflow: WorkflowRecord): Promise<boolean> {
+    if (!workflow.deadlineAt) return false;
+    if (workflow.status !== 'running' && workflow.status !== 'pending') return false;
+    if (now().getTime() < Date.parse(workflow.deadlineAt)) return false;
+
+    const workflowId = workflow.id;
+    const message = `Workflow exceeded its deadline of ${workflow.deadlineAt}`;
+    await store.skipPendingSteps(workflowId, message);
+    await store.finishWorkflow({ workflowId, status: 'failed', error: message, completedAt: nowIso() });
+    logger.warn('Workflow deadline exceeded', { workflowId, deadlineAt: workflow.deadlineAt });
+    emit({ type: 'workflow.failed', workflowId, error: message });
+    await compensateWorkflow(workflowId);
+    await bridgeSubWorkflow(workflowId);
+    return true;
   }
 
   // --------------------------------------------------------------------------
@@ -964,39 +1219,161 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     const step = await store.getStep(stepId);
     if (!step || step.workflowId !== workflowId || ['completed', 'failed', 'skipped'].includes(step.status)) return;
     await markStepFailed(stepId, workflowId, errorMessage);
-    await checkWorkflowFailure(workflowId);
+    await settle(workflowId);
   }
 
   /**
-   * Recover workflows whose step is stuck in `running` past the dispatcher expiry
-   * (worker crashed between marking `running` and completing). Marks such steps
-   * failed and cascades the workflow to `failed`.
+   * Sweep for runs that stopped moving on their own, and is the only thing that
+   * notices two of them:
+   *
+   * - a step stuck in `running` past the dispatcher expiry, because the worker
+   *   died between claiming it and finishing it. Under the default
+   *   `onStuckStep: 'retry'` it goes back on the queue while its attempt budget
+   *   lasts, so a crashed pod costs an attempt rather than the whole run.
+   * - a workflow past its deadline, wherever it was — queued, suspended on an
+   *   event that never came, or genuinely working.
+   *
+   * Run it on a schedule (a cron job, or the pg-boss scheduler).
    */
-  async function recoverStuckWorkflows(): Promise<{ recoveredSteps: number; recoveredWorkflows: number }> {
+  async function recoverStuckWorkflows(): Promise<RecoverySweepResult> {
     const stuckThresholdSeconds = stepExpirySeconds + stuckStepBufferSeconds;
     const cutoff = new Date(now().getTime() - stuckThresholdSeconds * 1000).toISOString();
 
     const runningWorkflows = await store.listRunningWorkflows();
-    if (runningWorkflows.length === 0) return { recoveredSteps: 0, recoveredWorkflows: 0 };
+    const empty: RecoverySweepResult = { retriedSteps: 0, recoveredSteps: 0, recoveredWorkflows: 0, expiredWorkflows: 0 };
+    if (runningWorkflows.length === 0) return empty;
 
+    let retriedSteps = 0;
     let recoveredSteps = 0;
+    let expiredWorkflows = 0;
     const affectedWorkflowIds = new Set<WorkflowId>();
 
     for (const workflow of runningWorkflows) {
+      // Deadline first: a run that is over shouldn't have its steps re-queued.
+      if (await expireIfPastDeadline(workflow)) {
+        expiredWorkflows++;
+        continue;
+      }
+
       const stuckSteps = await store.findStuckSteps(workflow.id, cutoff);
       for (const step of stuckSteps) {
-        logger.warn('Recovering stuck workflow step', { workflowId: workflow.id, stepId: step.id, stepKey: step.key, startedAt: step.startedAt });
-        await markStepFailed(step.id, workflow.id, `Step exceeded ${stuckThresholdSeconds}s without completion (worker likely crashed)`);
+        const registration = registry.getRegistration(step.type);
+        const maxAttempts = registration?.retry?.maxAttempts ?? 1;
+        const reason = `Step exceeded ${stuckThresholdSeconds}s without completion (worker likely crashed)`;
+
+        if (onStuckStep === 'retry' && step.attempts < maxAttempts) {
+          logger.warn('Re-queueing stuck workflow step', { workflowId: workflow.id, stepId: step.id, stepKey: step.key, attempt: step.attempts, maxAttempts, startedAt: step.startedAt });
+          await store.markStepPending(step.id);
+          const enqueued = await dispatcher.enqueueStep(
+            { workflowId: workflow.id, stepId: step.id, stepKey: step.key, stepType: step.type },
+            { startAfterSeconds: backoffDelaySeconds(registration?.retry, step.attempts) },
+          );
+          if (enqueued.ok) {
+            emit({ type: 'step.retrying', workflowId: workflow.id, workflowType: workflow.type, stepId: step.id, stepKey: step.key, stepType: step.type, attempt: step.attempts, error: reason });
+            retriedSteps++;
+            continue;
+          }
+          // Couldn't re-queue: fall through and fail it rather than leave the
+          // step `pending` with nothing behind it.
+          logger.error('Failed to re-queue stuck step', new Error(enqueued.error.message), { workflowId: workflow.id, stepId: step.id });
+        }
+
+        logger.warn('Failing stuck workflow step', { workflowId: workflow.id, stepId: step.id, stepKey: step.key, attempt: step.attempts, maxAttempts, startedAt: step.startedAt });
+        await markStepFailed(step.id, workflow.id, reason);
         recoveredSteps++;
         affectedWorkflowIds.add(workflow.id);
       }
     }
 
     for (const workflowId of affectedWorkflowIds) {
-      await checkWorkflowFailure(workflowId);
+      await settle(workflowId);
     }
 
-    return { recoveredSteps, recoveredWorkflows: affectedWorkflowIds.size };
+    return { retriedSteps, recoveredSteps, recoveredWorkflows: affectedWorkflowIds.size, expiredWorkflows };
+  }
+
+  // --------------------------------------------------------------------------
+  // Retry a failed run
+  // --------------------------------------------------------------------------
+
+  /**
+   * Put a `failed` workflow back in flight from where it stopped: every step
+   * that failed, was skipped in the fallout, or had its work compensated away
+   * goes back to `pending` with a **fresh attempt budget**, while everything
+   * that completed keeps its output and is not run again.
+   *
+   * This is the operator's answer to a bad deploy or a downstream outage that
+   * burned through the retry budget — the alternative being a brand-new run
+   * that repeats every side effect the first one already committed.
+   *
+   * Two things it deliberately does *not* do:
+   *
+   * - **Re-run completed work.** If a completed step's effects were undone by
+   *   saga compensation, that step is `compensated`, not `completed`, so it is
+   *   reset and runs again — which is exactly right.
+   * - **Resurrect a sub-workflow child.** Retrying a child cannot un-fail the
+   *   parent step waiting on it, which would leave the pair inconsistent; retry
+   *   the parent instead, and it starts a fresh child.
+   */
+  async function retryWorkflow(workflowId: WorkflowId): Promise<Result<RetryWorkflowResult, FlowError>> {
+    const workflow = await store.getWorkflow(workflowId);
+    if (!workflow) return { ok: false, error: { key: 'workflow_not_found', message: `Workflow ${workflowId} not found` } };
+
+    if (workflow.status !== 'failed') {
+      return {
+        ok: false,
+        error: {
+          key: 'workflow_not_retryable',
+          status: workflow.status,
+          message: `Workflow ${workflowId} is '${workflow.status}'; only a failed workflow can be retried`,
+        },
+      };
+    }
+    if (workflow.parentWorkflowId != null) {
+      return {
+        ok: false,
+        error: {
+          key: 'workflow_not_retryable',
+          status: workflow.status,
+          message: `Workflow ${workflowId} is a sub-workflow of ${workflow.parentWorkflowId}; retry the parent instead`,
+        },
+      };
+    }
+
+    const steps = await store.listSteps(workflowId);
+    const toReset = steps.filter(
+      (s) => s.parentStepId == null && (s.status === 'failed' || s.status === 'skipped' || s.status === 'compensated'),
+    );
+    if (toReset.length === 0) {
+      return {
+        ok: false,
+        error: { key: 'workflow_not_retryable', status: workflow.status, message: `Workflow ${workflowId} has no steps to retry` },
+      };
+    }
+
+    for (const step of toReset) {
+      // A map parent fans out afresh, so last attempt's children must not
+      // linger — they would be counted, and aggregated, twice.
+      if (registry.getRegistration(step.type)?.map) await store.deleteChildSteps(step.id);
+      await store.resetStep(step.id);
+    }
+
+    const after = await store.listSteps(workflowId);
+    await store.reopenWorkflow({
+      workflowId,
+      totalSteps: after.length,
+      completedSteps: after.filter((s) => s.status === 'completed').length,
+      failedSteps: 0,
+    });
+
+    const resetSteps = toReset.map((s) => s.key);
+    logger.info('Retrying failed workflow', { workflowId, resetSteps });
+    emit({ type: 'workflow.retried', workflowId, workflowType: workflow.type });
+
+    // Nothing completed to trigger a dispatch, so ask for one explicitly.
+    await settle(workflowId, { dispatchReady: true });
+
+    return { ok: true, value: { workflowId, resetSteps } };
   }
 
   return {
@@ -1004,9 +1381,12 @@ export function createWorkflowEngine<TContext = unknown>(deps: WorkflowEngineDep
     startWorkflow,
     start,
     executeStep,
+    timeoutStep,
+    handleStepJob,
     resumeStep,
     handleStepExhausted,
     recoverStuckWorkflows,
+    retryWorkflow,
     cancelWorkflow,
     getWorkflowStatus,
     listWorkflows,

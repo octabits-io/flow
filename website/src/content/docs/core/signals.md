@@ -8,6 +8,7 @@ const approval = defineWaitStep({
   type: 'await-approval',
   outputSchema: z.object({ approved: z.boolean() }),
   dependencies: { draft },
+  timeoutMs: 48 * 60 * 60 * 1000,   // optional; see Deadlines
 });
 
 const wf = buildWorkflow({ type: 'publish', inputSchema, steps: { draft, approval, publish } });
@@ -56,18 +57,30 @@ It returns an error only when the workflow or the step key doesn't exist. That m
 re-delivered webhook is a no-op, but so is a resume that arrives before the step is ready — if
 your event can beat the DAG, persist it and replay after the `step.waiting` event.
 
-## Waiting forever
+## Bounding the wait
 
-A `waiting` step has no timeout. It is **not** swept by
+By default a `waiting` step waits indefinitely — it is **not** swept by
 [`recoverStuckWorkflows`](/octaflow/running/cancellation-and-recovery/), which only looks at
-steps stuck in `running`, so a workflow awaiting an event that never arrives waits
-indefinitely. Two ways to bound it:
+steps stuck in `running`. Three ways to bound it:
 
+- **Give it a deadline.** `timeoutMs` plus `onTimeout` is the built-in answer, and the one you
+  usually want:
+
+  ```ts
+  const approval = defineWaitStep({
+    type: 'await-approval',
+    outputSchema: z.object({ approved: z.boolean() }),
+    timeoutMs: 48 * 60 * 60 * 1000,
+    onTimeout: { output: { approved: false } },  // or 'fail' (the default)
+  });
+  ```
+
+  See [Deadlines](/octaflow/core/deadlines/) — including the worker change it requires
+  (`engine.handleStepJob`, not `executeStep`).
+- **Bound the whole run.** `StartOptions.timeoutMs` fails the workflow wherever it is,
+  suspended included.
 - **Cancel it.** `engine.cancelWorkflow(id)` marks `waiting` steps `skipped` and finishes the
   workflow as `cancelled`.
-- **Race it with a sleep.** Add a [sleep step](/octaflow/core/durable-sleep/) on a parallel
-  branch and have its downstream step check whether the approval landed. The DAG is static, so
-  there is no built-in "first one wins" — you model the timeout as a step.
 
 `waiting` folds to the display state `running` in the
 [public view](/octaflow/extending/http/), so a UI shows it as in-flight rather than as its own

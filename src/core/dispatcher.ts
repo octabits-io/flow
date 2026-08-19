@@ -1,12 +1,26 @@
 import type { Result, FlowErrorShape } from './result';
 import type { WorkflowId, StepId } from './types';
 
+/**
+ * What a step job is for. A queue carries two kinds of work for a step, and
+ * they differ only in this field:
+ *
+ * - `'execute'` (default) — run the step. Every job before wait deadlines
+ *   existed was this, which is why it is also what a payload without a `kind`
+ *   means: an in-flight job enqueued by an older version still routes correctly.
+ * - `'timeout'` — the step's wait budget has elapsed; settle it if it is still
+ *   suspended. Delivered by the same durable delay that powers a sleep step.
+ */
+export type DispatchKind = 'execute' | 'timeout';
+
 /** Payload handed to the dispatcher to schedule a single step for execution. */
 export interface DispatchStepPayload {
   workflowId: WorkflowId;
   stepId: StepId;
   stepKey: string;
   stepType: string;
+  /** Defaults to `'execute'` when absent. */
+  kind?: DispatchKind;
 }
 
 export interface EnqueueOptions {

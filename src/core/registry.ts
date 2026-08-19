@@ -14,12 +14,15 @@ export function createStepHandlerRegistry<TContext = unknown>(): StepHandlerRegi
         handler,
         retry: options?.retry,
         timeoutMs: options?.timeoutMs,
+        onTimeout: options?.onTimeout,
         delayMs: options?.delayMs,
         waitForEvent: options?.waitForEvent,
         map: options?.map,
         childType: options?.childType,
         subWorkflowDefinition: options?.subWorkflowDefinition,
         compensate: options?.compensate,
+        condition: options?.condition,
+        join: options?.join,
       });
     },
     get(type) {

@@ -45,7 +45,7 @@ function harness(now?: () => Date, observer?: FlowObserver) {
       if (++guard > 1000) throw new Error('runaway');
       const p = queue.shift()!;
       try {
-        await engine.executeStep(p.workflowId, p.stepId);
+        await engine.handleStepJob(p);
       } catch {
         /* dispatcher would retry */
       }
@@ -152,6 +152,155 @@ describe('createPgWorkflowStore (integration)', () => {
     const status = await h.engine.getWorkflowStatus(started.value.workflowId);
     if (!status.ok) return;
     expect(status.value.status).toBe('failed');
+  });
+
+  it('retries a failed workflow from the failure point on real Postgres', async () => {
+    const input = z.object({});
+    const control = { fail: true };
+    const a = defineStep<{}, { v: number }, Ctx>({
+      type: 'pgretry:a',
+      workflowInputSchema: input,
+      outputSchema: z.object({ v: z.number() }),
+      handler: async () => ({ v: 1 }),
+    });
+    const b = defineStep<{}, { v: number }, Ctx, { a: typeof a }>({
+      type: 'pgretry:b',
+      workflowInputSchema: input,
+      outputSchema: z.object({ v: z.number() }),
+      dependencies: { a },
+      handler: async (ctx) => {
+        if (control.fail) throw new Error('downstream is down');
+        return { v: ctx.deps.a.v + 1 };
+      },
+    });
+    const wf = buildWorkflow<{}, Ctx>({ type: 'pg-retry', inputSchema: input, steps: { a, b } });
+
+    const h = harness();
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+    const id = started.value.workflowId;
+    await h.drain();
+
+    const failed = await h.engine.getWorkflowStatus(id);
+    expect(failed.ok && failed.value.status).toBe('failed');
+
+    control.fail = false;
+    const retried = await h.engine.retryWorkflow(id);
+    expect(retried.ok).toBe(true);
+    await h.drain();
+
+    const status = await h.engine.getWorkflowStatus(id);
+    if (!status.ok) return;
+    expect(status.value.status).toBe('completed');
+    // The completed step's row was left alone; only `b` was reset and re-run.
+    expect(status.value.output).toEqual({ a: { v: 1 }, b: { v: 2 } });
+    expect(status.value.failedSteps).toBe(0);
+    expect(status.value.completedSteps).toBe(2);
+    const bRow = status.value.steps.find((step) => step.key === 'b');
+    expect(bRow?.error).toBeNull();
+    expect(bRow?.attempts).toBe(1);
+  });
+
+  it('drops a map parent’s children when its retry fans out again (Postgres)', async () => {
+    const input = z.object({});
+    const control = { fail: true };
+    const each = defineMapStep<number, { doubled: number }, {}, Ctx>({
+      type: 'pgmapretry:each',
+      workflowInputSchema: input,
+      itemOutputSchema: z.object({ doubled: z.number() }),
+      items: () => [1, 2],
+      each: (item) => {
+        if (control.fail && item === 2) throw new Error('poison');
+        return { doubled: item * 2 };
+      },
+    });
+    const wf = buildWorkflow<{}, Ctx>({ type: 'pg-map-retry', inputSchema: input, steps: { each } });
+
+    const h = harness();
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+    const id = started.value.workflowId;
+    await h.drain();
+
+    control.fail = false;
+    expect((await h.engine.retryWorkflow(id)).ok).toBe(true);
+    await h.drain();
+
+    const status = await h.engine.getWorkflowStatus(id);
+    if (!status.ok) return;
+    expect(status.value.status).toBe('completed');
+    // One generation of children in the table, and total_steps agrees.
+    expect(status.value.steps.filter((step) => step.key.startsWith('each#'))).toHaveLength(2);
+    expect(status.value.totalSteps).toBe(3);
+  });
+
+  it('persists a workflow deadline and fails the run once it passes', async () => {
+    let current = new Date('2026-04-01T00:00:00.000Z');
+    const input = z.object({});
+    const a = defineStep<{}, { v: number }, Ctx>({
+      type: 'pgdeadline:a',
+      workflowInputSchema: input,
+      outputSchema: z.object({ v: z.number() }),
+      handler: async () => ({ v: 1 }),
+    });
+    const wf = buildWorkflow<{}, Ctx>({ type: 'pg-deadline', inputSchema: input, steps: { a } });
+
+    const h = harness(() => current);
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {}, { timeoutMs: 30_000 });
+    if (!started.ok) return;
+    const id = started.value.workflowId;
+
+    expect((await h.store.getWorkflow(id))?.deadlineAt).toBe('2026-04-01T00:00:30.000Z');
+
+    current = new Date(current.getTime() + 60_000);
+    const swept = await h.engine.recoverStuckWorkflows();
+    expect(swept.expiredWorkflows).toBe(1);
+
+    const status = await h.engine.getWorkflowStatus(id);
+    if (!status.ok) return;
+    expect(status.value.status).toBe('failed');
+    expect(status.value.error).toContain('exceeded its deadline');
+  });
+
+  it('stamps when a wait step suspended and times it out from there (Postgres)', async () => {
+    let current = new Date('2026-05-01T00:00:00.000Z');
+    const input = z.object({});
+    const approval = defineWaitStep<{ approved: boolean }, Ctx>({
+      type: 'pgwaitto:approval',
+      outputSchema: z.object({ approved: z.boolean() }),
+      timeoutMs: 60_000,
+      onTimeout: { output: { approved: false } },
+    });
+    const wf = buildWorkflow<{}, Ctx>({ type: 'pg-wait-timeout', inputSchema: input, steps: { approval } });
+
+    const h = harness(() => current);
+    wf.register(h.registry);
+    const started = await wf.start(h.engine, {});
+    if (!started.ok) return;
+    const id = started.value.workflowId;
+
+    const waiting = (await h.store.listSteps(id))[0]!;
+    expect(waiting.status).toBe('waiting');
+    // `startedAt` is when the suspension began — the clock the deadline runs on.
+    expect(waiting.startedAt).toBe('2026-05-01T00:00:00.000Z');
+    // The deadline job is on the queue with the right delay.
+    expect(h.queue.some((job) => job.kind === 'timeout' && job.stepId === waiting.id)).toBe(true);
+
+    // Too early: the deadline re-arms instead of firing.
+    current = new Date(current.getTime() + 30_000);
+    await h.engine.timeoutStep(id, waiting.id);
+    expect((await h.store.getStep(waiting.id))?.status).toBe('waiting');
+
+    current = new Date(current.getTime() + 31_000);
+    await h.engine.timeoutStep(id, waiting.id);
+
+    const status = await h.engine.getWorkflowStatus(id);
+    if (!status.ok) return;
+    expect(status.value.status).toBe('completed');
+    expect(status.value.output).toEqual({ approval: { approved: false } });
   });
 
   it('claims a step atomically: exactly one of two concurrent markStepRunning calls wins', async () => {

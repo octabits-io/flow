@@ -119,10 +119,12 @@ that the others have earned.
 Reach for something else if:
 
 - **Your control flow is genuinely dynamic.** A declarative DAG is fixed at definition time.
-  Flow softens this with [`defineMapStep`](https://octabits-io.github.io/octaflow/core/fan-out-and-map/) (runtime-sized fan-out),
-  [sub-workflows](https://octabits-io.github.io/octaflow/core/sub-workflows/), and [`waitForEvent`](https://octabits-io.github.io/octaflow/core/signals/) — but if your
-  process is "loop until a human approves, branching on whatever they typed," an imperative
-  durable function will express it more naturally.
+  Flow softens this a lot — [`when` guards and joins](https://octabits-io.github.io/octaflow/core/branching/) (if/else over a static graph),
+  [`defineMapStep`](https://octabits-io.github.io/octaflow/core/fan-out-and-map/) (runtime-sized fan-out),
+  [sub-workflows](https://octabits-io.github.io/octaflow/core/sub-workflows/), and [`waitForEvent`](https://octabits-io.github.io/octaflow/core/signals/) — but the
+  set of steps is still fixed up front. If your process is "**loop** until a human approves,
+  branching on whatever they typed," an imperative durable function will express it more
+  naturally: Flow can pick a branch, not invent a step.
 - **You want a UI out of the box.** Flow ships a wire-safe projection
   ([`toPublicWorkflow`](https://octabits-io.github.io/octaflow/extending/http/)) and lifecycle events, not a
   dashboard. You build it.
@@ -188,13 +190,17 @@ next to what your steps actually do.
 | ⚡ | **Auto-parallelism** — dependency-free steps run concurrently; a step starts when all its deps complete |
 | 🔁 | **Retry & timeout** — per-step `maxAttempts`, fixed/exponential backoff, wall-clock timeout |
 | 💤 | **Durable sleep** — hold a step in the queue for N ms (survives restarts) |
+| 🔀 | **Conditional branching** — `when` guards skip a step and its branch; `join: 'any'` converges |
+| ⏳ | **Deadlines** — a budget on a suspended step (fail, or continue with a stand-in answer) and on a whole run |
+| ♻️ | **Retry a failed run** — `retryWorkflow` resumes from the failure point; completed steps keep their output |
 | 🚦 | **Concurrency & rate limiting** — per-step-type caps and token buckets via a pluggable gate |
 | ⏰ | **Cron / scheduled starts** — fire workflows on a schedule (pg-boss) |
 | 🔑 | **Start idempotency** — a dedup key collapses double-clicks / overlapping ticks |
 | 🗺️ | **Dynamic fan-out / map** — spawn one child step per item of a runtime-sized list |
-| ⏸️ | **Signals / waitForEvent** — suspend a step until an external event (`resumeStep`) |
+| ⏸️ | **Signals / waitForEvent** — suspend a step until an external event (`resumeStep`), with an optional deadline |
 | 🪆 | **Sub-workflows** — a step starts a child workflow and awaits its result |
 | ↩️ | **Saga compensation** — run rollback handlers in reverse order on failure |
+| 🚑 | **Crash recovery** — a step whose worker died is re-queued while its attempt budget lasts |
 | 🔭 | **Observability** — lifecycle events (run history) + per-step spans, both pluggable |
 | 🤖 | **AI add-on** — instrumented models, token/cost capture, quota, daily rollups |
 | 🧱 | **Pluggable everything** — `WorkflowStore`, `Dispatcher`, `StepGate`, `FlowObserver`, hooks |
@@ -240,9 +246,11 @@ Full docs — concepts, every feature, production wiring and the API reference �
 | [Defining steps](https://octabits-io.github.io/octaflow/core/defining-steps/) | `defineStep` and its variants |
 | [Retry & timeout](https://octabits-io.github.io/octaflow/core/retry-and-timeout/) | attempt budgets, backoff, and how a failure is classified |
 | [Fan-out & map](https://octabits-io.github.io/octaflow/core/fan-out-and-map/) | one child step per item of a runtime list |
+| [Branching](https://octabits-io.github.io/octaflow/core/branching/) | `when` guards and join rules — if/else over a static DAG |
 | [Signals](https://octabits-io.github.io/octaflow/core/signals/) · [Sub-workflows](https://octabits-io.github.io/octaflow/core/sub-workflows/) · [Saga](https://octabits-io.github.io/octaflow/core/saga-compensation/) | suspend, nest, and roll back |
+| [Deadlines](https://octabits-io.github.io/octaflow/core/deadlines/) | budgets for a suspended step and for a whole run |
 | [Postgres & pg-boss](https://octabits-io.github.io/octaflow/running/postgres-and-pg-boss/) | production wiring, workers, DLQ, cron |
-| [Cancellation & recovery](https://octabits-io.github.io/octaflow/running/cancellation-and-recovery/) | cancelling a run, and sweeping steps a crash left behind |
+| [Cancellation & recovery](https://octabits-io.github.io/octaflow/running/cancellation-and-recovery/) | cancelling a run, sweeping steps a crash left behind, and retrying a failed run |
 | [Observability](https://octabits-io.github.io/octaflow/running/observability/) · [Live progress](https://octabits-io.github.io/octaflow/running/live-progress/) | lifecycle events, spans, and streaming them to a browser |
 | [The AI add-on](https://octabits-io.github.io/octaflow/extending/ai/) | token/cost capture, quota, usage rollups |
 | [Extending](https://octabits-io.github.io/octaflow/extending/interfaces/) | custom stores, dispatchers and gates |
@@ -270,8 +278,10 @@ Runnable, focused examples live in [`examples/`](./examples) — see [`examples/
 | 12 | `12-postgres-pgboss-production.ts` | full pg store + gate + event sink + pg-boss + cron |
 | 13 | `13-ai-workflow.ts` | AI add-on (instrumented model + cost) |
 | 14 | `14-live-progress.ts` | `FlowObserver` → SSE fan-out (build your own dashboard) |
+| 15 | `15-conditional-branching.ts` | `when` guards + a `join: 'any'` convergence |
+| 16 | `16-deadlines-and-retry.ts` | wait deadlines, run deadlines, `retryWorkflow` |
 
-The in-memory examples (01–11) share a small driver, [`examples/runtime.ts`](./examples/runtime.ts),
+The in-memory examples (01–11, 14–16) share a small driver, [`examples/runtime.ts`](./examples/runtime.ts),
 that builds an engine over the in-memory store and an in-process queue you drain.
 
 ---

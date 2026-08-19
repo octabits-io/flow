@@ -1,4 +1,5 @@
 import type { Result, FlowErrorShape } from './result';
+import type { JoinRule } from './readiness';
 
 // ============================================================================
 // Identifiers & status
@@ -61,6 +62,14 @@ export interface StartOptions {
    * request, or overlapping cron tick can't start the same work twice.
    */
   idempotencyKey?: string;
+  /**
+   * Wall-clock budget for the whole run, in ms. Stored as an absolute deadline;
+   * once it passes, the workflow fails (and compensates) instead of running on —
+   * whether it was executing, queued, or suspended on an event. Enforced when a
+   * step is picked up and by `recoverStuckWorkflows`, so the sweeper's cadence is
+   * the resolution. Omit for no deadline.
+   */
+  timeoutMs?: number;
   /**
    * Internal: set by a sub-workflow step to link a child workflow back to the
    * parent workflow + step that started it, so the parent step resumes when the child ends.
@@ -134,6 +143,31 @@ export type StepCompensateHandler<TContext = unknown> = (
   ctx: StepCompensationContext<TContext>,
 ) => Promise<void> | void;
 
+/**
+ * Guard deciding whether a ready step actually runs. Evaluated by the engine
+ * after the step is claimed and its dependency outputs are resolved, but before
+ * the handler: `false` skips the step (and, transitively, everything reachable
+ * only through it) instead of running it.
+ *
+ * Returns a `Result` rather than a bare boolean so a guard that throws is
+ * classified exactly like a failing handler — and therefore retried on a
+ * transient error rather than silently skipping the branch.
+ */
+export type StepConditionHandler<TContext = unknown> = (
+  ctx: StepExecutionContext<TContext>,
+) => Promise<Result<boolean, StepError>>;
+
+/**
+ * What happens when a suspended step's wait budget (`timeoutMs`) runs out.
+ *
+ * - `'fail'` (default) — the step fails; the workflow fails with it.
+ * - `{ output }` — the step **completes** with this output and the DAG carries
+ *   on. Pair it with a `when` guard downstream to express "approve within 48h,
+ *   otherwise escalate": the wait completes with `{ approved: false }` and the
+ *   escalation branch picks it up.
+ */
+export type WaitTimeoutPolicy = 'fail' | { output: Record<string, unknown> };
+
 /** Per-step retry policy. Applied by the engine when a step fails retryably. */
 export interface RetryPolicy {
   /** Total attempts including the first (1 = no retry). */
@@ -150,8 +184,18 @@ export interface RetryPolicy {
 export interface StepRegistration<TContext = unknown> {
   handler: StepHandler<TContext>;
   retry?: RetryPolicy;
-  /** Per-step wall-clock timeout in ms. On expiry the step is aborted + retried. */
+  /**
+   * Per-step wall-clock budget in ms — how long this step may take, whether it
+   * spends the time working or waiting.
+   *
+   * For a normal step it bounds the handler: on expiry the step is aborted and
+   * retried. For a `waitForEvent` step (which has no handler to abort) it bounds
+   * the **suspension**: if no `resumeStep` arrives in time, {@link onTimeout}
+   * decides what happens.
+   */
   timeoutMs?: number;
+  /** For a `waitForEvent` step: what a `timeoutMs` expiry does. Default `'fail'`. */
+  onTimeout?: WaitTimeoutPolicy;
   /**
    * Durable start delay in ms: once the step becomes ready (all deps complete), its
    * first dispatch is held for this long via the queue. A no-op handler with a delay
@@ -180,6 +224,18 @@ export interface StepRegistration<TContext = unknown> {
   subWorkflowDefinition?: WorkflowDefinition;
   /** Optional saga rollback handler: undoes this step's effects on workflow failure. */
   compensate?: StepCompensateHandler<TContext>;
+  /**
+   * Optional guard: when it returns `false` the step is **skipped** instead of
+   * run, and so is everything reachable only through it. This is how a
+   * declarative DAG branches — see {@link StepConditionHandler}.
+   */
+  condition?: StepConditionHandler<TContext>;
+  /**
+   * How this step's dependencies gate it. Default `'all'`. Use `'any'` on the
+   * step where conditional branches converge, so a skipped arm doesn't skip the
+   * join. See {@link JoinRule}.
+   */
+  join?: JoinRule;
 }
 
 /** Registry mapping step `type` strings to handlers + their policies. */
@@ -190,12 +246,15 @@ export interface StepHandlerRegistry<TContext = unknown> {
     options?: {
       retry?: RetryPolicy;
       timeoutMs?: number;
+      onTimeout?: WaitTimeoutPolicy;
       delayMs?: number;
       waitForEvent?: boolean;
       map?: boolean;
       childType?: string;
       subWorkflowDefinition?: WorkflowDefinition;
       compensate?: StepCompensateHandler<TContext>;
+      condition?: StepConditionHandler<TContext>;
+      join?: JoinRule;
     },
   ): void;
   get(type: string): StepHandler<TContext> | undefined;
@@ -225,6 +284,8 @@ export interface WorkflowRecord {
   completedSteps: number;
   failedSteps: number;
   metadata: Record<string, unknown> | null;
+  /** Absolute wall-clock deadline for the run (from `StartOptions.timeoutMs`), or null. */
+  deadlineAt: string | null;
   createdAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -267,6 +328,11 @@ export interface StepHandlerNotFoundError extends FlowErrorShape {
   key: 'step_handler_not_found';
   stepType: string;
 }
+/** `retryWorkflow` was called on a run that cannot be resumed from where it stopped. */
+export interface WorkflowNotRetryableError extends FlowErrorShape {
+  key: 'workflow_not_retryable';
+  status: WorkflowStatus;
+}
 
 /**
  * Engine error type. The named members cover flow-core's own failures; the
@@ -277,5 +343,6 @@ export type FlowError =
   | WorkflowNotFoundError
   | InvalidWorkflowDefinitionError
   | StepHandlerNotFoundError
+  | WorkflowNotRetryableError
   | StepError
   | FlowErrorShape;

@@ -2,7 +2,7 @@
  * 12 — Production wiring: Postgres store + gate + event sink + pg-boss dispatcher + cron
  *
  * Reference setup for a durable, multi-process deployment. Unlike the in-memory examples there's
- * no manual drain: the pg-boss step worker pulls jobs and drives `engine.executeStep`, retries
+ * no manual drain: the pg-boss step worker pulls jobs and drives `engine.handleStepJob`, retries
  * and durable sleeps are real (queue `startAfterSeconds`), and the cron scheduler starts
  * workflows on a schedule.
  *
@@ -70,10 +70,12 @@ async function main() {
   const engine = createWorkflowEngine({ store, dispatcher, registry, partitionKey, gate, observer });
   wf.register(registry);
 
-  // 3. Step worker — pull a job and execute it. Throwing → pg-boss retry; exhaustion → DLQ.
+  // 3. Step worker — pull a job and hand it to the engine. Throwing → pg-boss retry;
+  //    exhaustion → DLQ. Use `handleStepJob`, not `executeStep`: the queue also carries
+  //    the wait deadlines of suspended steps, and only the payload's `kind` tells them apart.
   const worker = createPgBossStepWorker({ boss, queueName: stepQueue });
   await worker.start(async (payload) => {
-    await engine.executeStep(payload.workflowId, payload.stepId);
+    await engine.handleStepJob(payload);
   });
 
   // 4. DLQ worker — a job that exhausted its retries → mark the step terminally failed.

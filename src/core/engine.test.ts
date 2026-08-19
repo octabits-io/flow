@@ -52,7 +52,7 @@ function harness(opts?: { hooks?: WorkflowHooks<Ctx>; now?: () => Date; observer
       // A real dispatcher retries on throw; the engine has already marked the
       // step failed + cascaded before re-throwing, so swallowing is faithful.
       try {
-        await engine.executeStep(p.workflowId, p.stepId);
+        await engine.handleStepJob(p);
       } catch {
         /* simulated DLQ */
       }
